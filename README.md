@@ -1,4 +1,4 @@
-# F1 RL Thesis: Multi-Architecture Safety and Reward Comparison
+# F1 RL Thesis: Multi-Algorithm Safety and Reward Comparison
 
 This repository hosts the thesis-focused version of the F1 RL safety project. It extends the original `f1-rl-safety` codebase into a multi-architecture, multi-reward comparison study for a single-car strategic Formula 1 race simulator calibrated on the 2024 British Grand Prix at Silverstone.
 
