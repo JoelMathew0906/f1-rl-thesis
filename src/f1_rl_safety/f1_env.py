@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 from enum import Enum, auto
 from pathlib import Path
+from typing import Optional, Dict, Any
+
+from .track import load_or_build_silverstone_segments, TrackSegment
 
 
 class RaceRegime(Enum):
@@ -20,13 +23,13 @@ class F1RaceEnv(gym.Env):
         regime: RaceRegime = RaceRegime.UNCONSTRAINED,
         n_laps: int = 52,
         seed: int | None = None,
-        data_path: str = "data/silverstone_2025_laps.csv",
+        laps_data_path: str = "data/silverstone_2024_laps.csv",
     ):
         super().__init__()
         self.regime = regime
         self.n_laps = n_laps
         self.rng = np.random.default_rng(seed)
-        self.data_path = Path(data_path)
+        self.laps_data_path = Path(laps_data_path)
 
         self.compound_to_idx = {
             "SOFT": 0,
@@ -37,7 +40,10 @@ class F1RaceEnv(gym.Env):
         }
         self.idx_to_compound = {v: k for k, v in self.compound_to_idx.items()}
 
-        self.calibration = self._load_calibration()
+        # load track segmentation and calibration from 2024 race data
+        self.track_segments = load_or_build_silverstone_segments(year=2024)
+        self.n_segments = len(self.track_segments)
+        self.calibration = self._load_calibration_2024()
 
         obs_dim = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 3 + 5 + 2
         self.observation_space = spaces.Box(
@@ -52,7 +58,9 @@ class F1RaceEnv(gym.Env):
 
         self._reset_internal_state()
 
-    def _load_calibration(self):
+    # --- calibration from 2024 race data ---
+
+    def _load_calibration_2024(self) -> Dict[str, Any]:
         fallback = {
             "base_lap_time": 92.0,
             "compound_offsets": {
@@ -79,13 +87,12 @@ class F1RaceEnv(gym.Env):
             "pit_loss": 21.5,
         }
 
-        if not self.data_path.exists():
+        if not self.laps_data_path.exists():
             return fallback
 
         try:
-            df = pd.read_csv(self.data_path)
-            df = df.copy()
-            df = df.dropna(subset=["LapTime", "Compound", "TyreLife"])
+            df = pd.read_csv(self.laps_data_path)
+            df = df.dropna(subset=["LapTime", "Compound", "TyreLife"]).copy()
             df["LapTimeSeconds"] = pd.to_timedelta(df["LapTime"]).dt.total_seconds()
             df = df[np.isfinite(df["LapTimeSeconds"])]
             df["Compound"] = df["Compound"].astype(str).str.upper()
@@ -96,9 +103,9 @@ class F1RaceEnv(gym.Env):
 
             base_lap = float(dry_df["LapTimeSeconds"].median())
 
-            compound_offsets = {}
-            deg_per_lap = {}
-            typical_stint = {}
+            compound_offsets: Dict[int, float] = {}
+            deg_per_lap: Dict[int, float] = {}
+            typical_stint: Dict[int, int] = {}
 
             for name, idx in self.compound_to_idx.items():
                 cdf = df[df["Compound"] == name].copy()
@@ -115,14 +122,15 @@ class F1RaceEnv(gym.Env):
                     x = cdf["TyreLife"].astype(float).values
                     y = cdf["LapTimeSeconds"].astype(float).values
                     slope = np.polyfit(x, y, 1)[0]
-                    deg_per_lap[idx] = float(np.clip(slope, 0.03, 0.35))
+                    # allow a wider but still reasonable range for 2024 data
+                    deg_per_lap[idx] = float(np.clip(slope, 0.01, 0.40))
                 else:
                     deg_per_lap[idx] = fallback["deg_per_lap"][idx]
 
                 if "Stint" in cdf.columns:
                     stint_lengths = cdf.groupby(["Driver", "Stint"]).size()
                     if len(stint_lengths) > 0:
-                        typical_stint[idx] = int(np.clip(stint_lengths.median(), 8, 28))
+                        typical_stint[idx] = int(np.clip(stint_lengths.median(), 8, 32))
                     else:
                         typical_stint[idx] = fallback["typical_stint"][idx]
                 else:
@@ -138,8 +146,11 @@ class F1RaceEnv(gym.Env):
         except Exception:
             return fallback
 
+    # --- internal state ---
+
     def _reset_internal_state(self):
         self.current_lap = 0
+        self.current_segment_idx = 0
         self.race_time = 0.0
         self.position = 10
         self.gap_ahead = 1.0
@@ -155,11 +166,17 @@ class F1RaceEnv(gym.Env):
         self.catastrophic_event = False
         self.last_risk_level = 0.0
 
+        # logging of crash locations
+        self.last_segment: Optional[TrackSegment] = None
+        self.crash_log: list[dict[str, Any]] = []
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.rng = np.random.default_rng(seed)
         self._reset_internal_state()
         return self._get_obs(), {}
+
+    # --- observations ---
 
     def _get_obs(self):
         lap_frac = self.current_lap / max(self.n_laps - 1, 1)
@@ -190,28 +207,42 @@ class F1RaceEnv(gym.Env):
             ]
         )
 
+    # --- stepping ---
+
     def step(self, action):
         pit_decision = int(action[0] > 0.5)
         tyre_choice = int(np.clip(round(action[1]), 0, 4))
         risk_level = float(np.clip(action[2], -1.0, 1.0))
         self.last_risk_level = risk_level
 
-        self.current_lap += 1
+        segment = self.track_segments[self.current_segment_idx]
+        self.last_segment = segment
 
-        lap_time, pos_delta, crash, sc_triggered = self._simulate_lap(
-            pit_decision, tyre_choice, risk_level
+        # progress along track
+        self.current_segment_idx += 1
+        completed_lap = False
+        if self.current_segment_idx >= self.n_segments:
+            self.current_segment_idx = 0
+            self.current_lap += 1
+            completed_lap = True
+
+        lap_time, pos_delta, crash, sc_triggered = self._simulate_segment(
+            segment, pit_decision, tyre_choice, risk_level
         )
 
         self.race_time += lap_time
         self.position = int(np.clip(self.position + pos_delta, 1, 20))
-        self.tyre_age += 1
-        self.tyre_wear = np.clip(
-            self.tyre_wear + self._tyre_wear_increment(risk_level), 0.0, 1.5
-        )
-        self.fuel_level = max(0.0, self.fuel_level - 1.0 / self.n_laps)
+
+        if completed_lap:
+            self.tyre_age += 1
+            self.tyre_wear = np.clip(
+                self.tyre_wear + self._tyre_wear_increment(risk_level), 0.0, 1.5
+            )
+            self.fuel_level = max(0.0, self.fuel_level - 1.0 / self.n_laps)
+
         self.track_status = 2 if sc_triggered else 0
 
-        if pit_decision:
+        if pit_decision and completed_lap:
             self.made_pitstop = True
             self.pit_count += 1
             self.tyre_compound = tyre_choice
@@ -221,6 +252,14 @@ class F1RaceEnv(gym.Env):
         self.crashed = crash
         if crash:
             self.catastrophic_event = self._is_catastrophic(crash, risk_level)
+            self.crash_log.append(
+                {
+                    "lap": self.current_lap,
+                    "segment_id": segment.id,
+                    "corner_number": segment.corner_number,
+                    "corner_name": segment.corner_name,
+                }
+            )
 
         terminated = self.crashed or (self.current_lap >= self.n_laps)
         truncated = False
@@ -230,7 +269,9 @@ class F1RaceEnv(gym.Env):
                 self.position = 20
                 self.race_time += 300.0
 
-        reward = self._compute_reward(lap_time, pos_delta, crash, risk_level, terminated)
+        reward = self._compute_reward(
+            lap_time, pos_delta, crash, risk_level, terminated
+        )
 
         obs = self._get_obs()
         info = {
@@ -240,31 +281,47 @@ class F1RaceEnv(gym.Env):
             "sc_triggered": sc_triggered,
             "risk_level": risk_level,
             "pit_count": self.pit_count,
+            "segment_id": segment.id,
+            "corner_name": segment.corner_name,
+            "corner_number": segment.corner_number,
+            "segment_type": segment.segment_type,
+            "segment_risk": self._segment_crash_prob(segment, risk_level),
         }
         return obs, reward, terminated, truncated, info
+
+    # --- segment and crash modelling ---
 
     def _base_lap_time(self):
         return float(self.calibration["base_lap_time"])
 
-    def _simulate_lap(self, pit_decision, tyre_choice, risk_level):
-        base = self._base_lap_time()
+    def _simulate_segment(
+        self,
+        segment: TrackSegment,
+        pit_decision: int,
+        tyre_choice: int,
+        risk_level: float,
+    ):
+        base_lap = self._base_lap_time()
+        base = base_lap / max(self.n_segments, 1)
 
-        compound_pen = self.calibration["compound_offsets"].get(self.tyre_compound, 0.0)
+        compound_pen = self.calibration["compound_offsets"].get(
+            self.tyre_compound, 0.0
+        ) / max(self.n_segments, 1)
         deg = self.calibration["deg_per_lap"].get(self.tyre_compound, 0.1)
+        wear_pen = (deg * self.tyre_age) / max(self.n_segments, 1)
+        fuel_pen = (2.5 * self.fuel_level) / max(self.n_segments, 1)
 
-        wear_pen = deg * self.tyre_age
-        fuel_pen = 2.5 * self.fuel_level
-
-        risk_gain = -1.8 * max(0.0, risk_level)
-        overcaution_pen = 0.8 * max(0.0, -risk_level)
+        risk_gain = -1.8 * max(0.0, risk_level) / max(self.n_segments, 1)
+        overcaution_pen = 0.8 * max(0.0, -risk_level) / max(self.n_segments, 1)
 
         pit_loss = 0.0
-        if pit_decision:
-            pit_loss = self.calibration["pit_loss"] + self.rng.normal(0, 0.8)
+        # approximate pit loss on pit entry straight at lap completion
+        if pit_decision and segment.segment_type == "straight":
+            pit_loss = self.calibration["pit_loss"] / max(self.n_segments, 1)
 
-        noise = self.rng.normal(0, 0.6)
+        noise = self.rng.normal(0, 0.2)
 
-        lap_time = (
+        seg_time = (
             base
             + compound_pen
             + wear_pen
@@ -276,26 +333,45 @@ class F1RaceEnv(gym.Env):
         )
 
         pos_delta = 0
-        if lap_time < base - 0.7 and self.rng.random() < 0.35:
+        if seg_time < base - 0.15 and self.rng.random() < 0.05:
             pos_delta -= 1
-        elif lap_time > base + 2.0 and self.rng.random() < 0.30:
+        elif seg_time > base + 0.30 and self.rng.random() < 0.05:
             pos_delta += 1
 
-        base_crash = 0.002
-        wear_risk = 0.015 * self.tyre_wear
-        aggressive_risk = 0.035 * max(0.0, risk_level)
-        old_tyre_risk = (
-            0.02
-            if self.tyre_age > self.calibration["typical_stint"].get(self.tyre_compound, 18)
-            else 0.0
-        )
-        crash_prob = np.clip(base_crash + wear_risk + aggressive_risk + old_tyre_risk, 0.0, 0.35)
+        crash_prob = self._segment_crash_prob(segment, risk_level)
         crash = self.rng.random() < crash_prob
 
-        sc_prob = 0.01 + 0.10 * float(crash)
+        sc_prob = 0.001 + 0.05 * float(crash)
         sc_triggered = self.rng.random() < sc_prob
 
-        return float(lap_time), int(pos_delta), bool(crash), bool(sc_triggered)
+        return float(seg_time), int(pos_delta), bool(crash), bool(sc_triggered)
+
+    def _segment_crash_prob(self, segment: TrackSegment, risk_level: float) -> float:
+        # base scale from lap-wide calibration
+        base = 0.002
+
+        if segment.segment_type == "corner":
+            base *= 8.0
+        else:
+            base *= 0.5
+
+        # radius: tighter corners are riskier
+        radius_term = 0.0
+        if segment.approx_radius is not None and segment.approx_radius > 0:
+            inv_r = 1.0 / max(segment.approx_radius, 1.0)
+            radius_term = 0.015 * inv_r
+
+        wear_term = 0.015 * self.tyre_wear
+        aggressive_term = 0.035 * max(0.0, risk_level)
+        old_tyre_term = (
+            0.02
+            if self.tyre_age
+            > self.calibration["typical_stint"].get(self.tyre_compound, 18)
+            else 0.0
+        )
+
+        base_prob = base + radius_term + wear_term + aggressive_term + old_tyre_term
+        return float(np.clip(base_prob, 0.0, 0.35))
 
     def _tyre_wear_increment(self, risk_level):
         base = {
@@ -309,22 +385,29 @@ class F1RaceEnv(gym.Env):
         return base + aggression
 
     def _estimate_risk(self):
-        return float(np.clip(0.6 * self.tyre_wear + 0.4 * max(0.0, self.last_risk_level), 0.0, 1.0))
+        return float(
+            np.clip(
+                0.6 * self.tyre_wear + 0.4 * max(0.0, self.last_risk_level), 0.0, 1.0
+            )
+        )
 
     def _is_catastrophic(self, crash: bool, risk_level: float):
         if not crash:
             return False
-        return self.rng.random() < max(0.02, 0.20 * max(0.0, risk_level) + 0.10 * self.tyre_wear)
+        return self.rng.random() < max(
+            0.02, 0.20 * max(0.0, risk_level) + 0.10 * self.tyre_wear
+        )
 
-    def _compute_reward(self, lap_time, pos_delta, crash, risk_level, terminated):
-        time_term = -lap_time / 100.0
+    def _compute_reward(self, seg_time, pos_delta, crash, risk_level, terminated):
+        # approximate lap-equivalent terms for reward shaping; still segment-based
+        time_term = -seg_time / 100.0
         pos_term = (10 - self.position) / 10.0
-        progress_term = -0.02
+        progress_term = -0.02 / max(self.n_segments, 1)
 
         reward = time_term + pos_term + progress_term
 
         if self.regime == RaceRegime.UNCONSTRAINED:
-            reward += 0.40 * max(0.0, risk_level)
+            reward += 0.40 * max(0.0, risk_level) / max(self.n_segments, 1)
             if crash:
                 reward -= 8.0
             if self.catastrophic_event:
@@ -337,10 +420,10 @@ class F1RaceEnv(gym.Env):
             if self.catastrophic_event:
                 reward -= 60.0
 
-            reward -= 1.0 * max(0.0, risk_level - 0.4)
+            reward -= 1.0 * max(0.0, risk_level - 0.4) / max(self.n_segments, 1)
 
             if self.current_lap > int(0.6 * self.n_laps) and self.pit_count < 1:
-                reward -= 3.0
+                reward -= 3.0 / max(self.n_segments, 1)
 
             if terminated:
                 if self.current_lap >= self.n_laps and self.pit_count < 1:
@@ -351,8 +434,8 @@ class F1RaceEnv(gym.Env):
             return reward
 
         if self.regime == RaceRegime.SAFE:
-            reward -= 3.0 * max(0.0, risk_level)
-            reward -= 0.5 * max(0.0, abs(risk_level) - 0.3)
+            reward -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
+            reward -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
 
             if crash:
                 reward -= 60.0
@@ -362,7 +445,9 @@ class F1RaceEnv(gym.Env):
             if self.pit_count > 3:
                 reward -= 15.0 * (self.pit_count - 3)
 
-            reward -= 3.0 * max(0.0, self.tyre_wear - 0.65)
+            reward -= 3.0 * max(0.0, self.tyre_wear - 0.65) / max(
+                self.n_segments, 1
+            )
 
             if terminated and self.current_lap >= self.n_laps and self.pit_count < 1:
                 reward -= 40.0
