@@ -60,12 +60,12 @@ def _build_silverstone_track_segments_from_fastf1(year: int = 2024) -> List[Trac
     corners = circuit_info.corners.copy()
     # Expected columns: x, y, number, letter and optionally name
     # Sort by corner number then letter to get lap order
-    sort_cols = [c for c in ["number", "letter"] if c in corners.columns]
+    sort_cols = [c for c in ["Number", "Letter"] if c in corners.columns]
     if sort_cols:
         corners = corners.sort_values(sort_cols)
 
-    xs = corners["x"].to_numpy(dtype=float)
-    ys = corners["y"].to_numpy(dtype=float)
+    xs = corners["X"].to_numpy(dtype=float)
+    ys = corners["Y"].to_numpy(dtype=float)
 
     # cumulative distance along successive corner points
     s_coords = [0.0]
@@ -94,13 +94,13 @@ def _build_silverstone_track_segments_from_fastf1(year: int = 2024) -> List[Trac
         segments.append(
             TrackSegment(
                 id=seg_id,
-                segment_type="straight",
+                segment_type="Straight",
                 length=straight_len,
                 sector=sector,
-                start_x=float(prev_row["x"]),
-                start_y=float(prev_row["y"]),
-                end_x=float(row["x"]),
-                end_y=float(row["y"]),
+                start_x=float(prev_row["X"]),
+                start_y=float(prev_row["Y"]),
+                end_x=float(row["X"]),
+                end_y=float(row["Y"]),
             )
         )
 
@@ -108,34 +108,34 @@ def _build_silverstone_track_segments_from_fastf1(year: int = 2024) -> List[Trac
         radius = None
         radius_len = 0.0
         # approximate radius using distance to neighbours
-        radius_len += float(np.hypot(row["x"] - prev_row["x"], row["y"] - prev_row["y"]))
+        radius_len += float(np.hypot(row["X"] - prev_row["X"], row["Y"] - prev_row["Y"]))
         next_row = corners.iloc[(idx + 1) % len(corners)]
-        radius_len += float(np.hypot(next_row["x"] - row["x"], next_row["y"] - row["y"]))
+        radius_len += float(np.hypot(next_row["X"] - row["X"], next_row["Y"] - row["Y"]))
         if radius_len > 0.0:
             radius = radius_len / 2.0
 
         # corner naming
         name = None
-        if "name" in corners.columns:
-            name = row["name"]
+        if "Name" in corners.columns:
+            name = row["Name"]
         if not isinstance(name, str) or not name:
-            letter = row["letter"] if "letter" in corners.columns else ""
-            name = f"Turn {int(row['number'])}{letter}"
+            letter = row["Letter"] if "Letter" in corners.columns else ""
+            name = f"Turn {int(row['Number'])}{letter}"
 
         seg_id += 1
         segments.append(
             TrackSegment(
                 id=seg_id,
-                segment_type="corner",
+                segment_type="Corner",
                 length=0.0,
                 sector=sector,
-                corner_number=int(row["number"]),
+                corner_number=int(row["Number"]),
                 corner_name=str(name),
                 approx_radius=radius,
-                start_x=float(row["x"]),
-                start_y=float(row["y"]),
-                end_x=float(row["x"]),
-                end_y=float(row["y"]),
+                start_x=float(row["X"]),
+                start_y=float(row["Y"]),
+                end_x=float(row["X"]),
+                end_y=float(row["Y"]),
             )
         )
 
