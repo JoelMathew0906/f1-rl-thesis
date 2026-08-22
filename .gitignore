@@ -1,0 +1,20 @@
+# Virtual environments
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Runtime caches / local artifacts
+data/cache/
+*.sqlite
+
+# Temporary search outputs
+grep_hits.txt
+grep_hits_clean.txt
+
+# Optional local backup
+requirements_old.txt
