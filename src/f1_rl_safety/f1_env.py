@@ -456,12 +456,15 @@ class F1RaceEnv(gym.Env):
 
         if self.regime == RaceRegime.UNCONSTRAINED:
             # performance-oriented: explicit reward for positive risk
-            reward += 0.40 * max(0.0, risk_level) / max(self.n_segments, 1)
+            reward += 1.5 * max(0.0, risk_level) / max(self.n_segments, 1)  # REWARD ADJUSTMENT V2 — strengthen risk bonus in unconstrained regime
             # crashes are penalised but less severely than other regimes
             if crash:
                 reward -= 8.0
             if self.catastrophic_event:
                 reward -= 25.0
+            # REWARD ADJUSTMENT V2 — emphasise fast overall race time at episode end in unconstrained regime
+            if terminated and self.current_lap >= self.n_laps:
+                reward += 0.1 * (self.n_laps / max(self.race_time, 1.0))
             return reward
 
         if self.regime == RaceRegime.RULEBOOK:
@@ -476,6 +479,10 @@ class F1RaceEnv(gym.Env):
             # soft shaping penalty if we are deep into the race without a pitstop
             if self.current_lap > int(0.6 * self.n_laps) and self.pit_count < 1:
                 reward -= 3.0 / max(self.n_segments, 1)
+
+            # REWARD ADJUSTMENT V2 — per-step penalty for excessive stint length on one compound in RULEBOOK regime
+            if self.tyre_age > 20 and self.pit_count < 1:
+                reward -= 0.1 / max(self.n_segments, 1)
 
             if terminated:
                 # terminal rule: at least one pitstop required in dry conditions
@@ -501,17 +508,26 @@ class F1RaceEnv(gym.Env):
                 if self.pit_count > 3:
                     reward -= 20.0 * (self.pit_count - 3)
 
+                # REWARD ADJUSTMENT V2 — bonus for satisfying mandatory pit stop in RULEBOOK regime
+                if self.current_lap >= self.n_laps and self.pit_count >= 1:
+                    reward += 5.0
+
+                # REWARD ADJUSTMENT V2 — bonus for using at least two dry compounds in RULEBOOK regime
+                if self.current_lap >= self.n_laps and not used_wet and len(used_dry) >= 2:
+                    reward += 2.0
+
             return reward
 
         if self.regime == RaceRegime.SAFE:
             # strong aversion to risk and high wear
             reward -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
             reward -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
+            reward -= 0.01 * max(0.0, risk_level)  # REWARD ADJUSTMENT V2 — per-step risk discouragement in SAFE regime
 
             if crash:
-                reward -= 60.0
+                reward -= 300.0  # REWARD ADJUSTMENT V2 — strengthen crash penalty in SAFE regime
             if self.catastrophic_event:
-                reward -= 200.0
+                reward -= 1000.0  # REWARD ADJUSTMENT V2 — strengthen catastrophic penalty in SAFE regime
 
             if self.pit_count > 3:
                 reward -= 15.0 * (self.pit_count - 3)
@@ -522,6 +538,10 @@ class F1RaceEnv(gym.Env):
 
             if terminated and self.current_lap >= self.n_laps and self.pit_count < 1:
                 reward -= 40.0
+
+            # REWARD ADJUSTMENT V2 — reward completing race without crash in SAFE regime
+            if terminated and self.current_lap >= self.n_laps and not self.crashed:
+                reward += 0.5 * self.n_laps
 
             return reward
 
