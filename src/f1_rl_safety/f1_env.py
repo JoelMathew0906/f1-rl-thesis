@@ -166,6 +166,9 @@ class F1RaceEnv(gym.Env):
         self.catastrophic_event = False
         self.last_risk_level = 0.0
 
+        # track which compounds have been used for rulebook compliance
+        self.used_compounds: set[int] = {self.tyre_compound}
+
         # logging of crash locations
         self.last_segment: Optional[TrackSegment] = None
         self.crash_log: list[dict[str, Any]] = []
@@ -248,6 +251,7 @@ class F1RaceEnv(gym.Env):
             self.tyre_compound = tyre_choice
             self.tyre_age = 0
             self.tyre_wear = 0.0
+            self.used_compounds.add(self.tyre_compound)
 
         self.crashed = crash
         if crash:
@@ -258,6 +262,14 @@ class F1RaceEnv(gym.Env):
                     "segment_id": segment.id,
                     "corner_number": segment.corner_number,
                     "corner_name": segment.corner_name,
+                    "segment_type": segment.segment_type,
+                    "tyre_compound": self.idx_to_compound.get(
+                        self.tyre_compound, str(self.tyre_compound)
+                    ),
+                    "tyre_age": self.tyre_age,
+                    "tyre_wear": float(self.tyre_wear),
+                    "risk_level": risk_level,
+                    "crash_reason": self._crash_reason(segment, risk_level),
                 }
             )
 
@@ -316,7 +328,8 @@ class F1RaceEnv(gym.Env):
 
         pit_loss = 0.0
         # approximate pit loss on pit entry straight at lap completion
-        if pit_decision and segment.segment_type == "straight":
+        seg_type = str(segment.segment_type).lower()
+        if pit_decision and seg_type == "straight":
             pit_loss = self.calibration["pit_loss"] / max(self.n_segments, 1)
 
         noise = self.rng.normal(0, 0.2)
@@ -347,10 +360,19 @@ class F1RaceEnv(gym.Env):
         return float(seg_time), int(pos_delta), bool(crash), bool(sc_triggered)
 
     def _segment_crash_prob(self, segment: TrackSegment, risk_level: float) -> float:
-        # base scale from lap-wide calibration
+        """Segment-level crash probability.
+
+        Combines a small lap-wide baseline with corner/straight type,
+        crude radius, tyre wear, and aggression relative to a simple
+        risk envelope. This is still a simplified hazard model and
+        not a full physics-based envelope.
+        """
         base = 0.002
 
-        if segment.segment_type == "corner":
+        seg_type = str(segment.segment_type).lower()
+        is_corner = seg_type == "corner"
+
+        if is_corner:
             base *= 8.0
         else:
             base *= 0.5
@@ -362,7 +384,12 @@ class F1RaceEnv(gym.Env):
             radius_term = 0.015 * inv_r
 
         wear_term = 0.015 * self.tyre_wear
-        aggressive_term = 0.035 * max(0.0, risk_level)
+
+        # simple risk envelope: corners tolerate less explicit risk
+        safe_risk = 0.3 if is_corner else 0.6
+        envelope_excess = max(0.0, risk_level - safe_risk)
+        exceed_term = 0.04 * envelope_excess
+
         old_tyre_term = (
             0.02
             if self.tyre_age
@@ -370,7 +397,7 @@ class F1RaceEnv(gym.Env):
             else 0.0
         )
 
-        base_prob = base + radius_term + wear_term + aggressive_term + old_tyre_term
+        base_prob = base + radius_term + wear_term + exceed_term + old_tyre_term
         return float(np.clip(base_prob, 0.0, 0.35))
 
     def _tyre_wear_increment(self, risk_level):
@@ -398,6 +425,27 @@ class F1RaceEnv(gym.Env):
             0.02, 0.20 * max(0.0, risk_level) + 0.10 * self.tyre_wear
         )
 
+    def _crash_reason(self, segment: TrackSegment, risk_level: float) -> str:
+        """Heuristic crash attribution.
+
+        This is not a full physics model, but maps observed
+        state to coarse failure modes for analysis.
+        """
+        if self.tyre_wear > 0.8:
+            return "tyre_overheating"
+        if (
+            self.tyre_age
+            > self.calibration["typical_stint"].get(self.tyre_compound, 18)
+            and self.tyre_wear > 0.6
+        ):
+            return "insufficient_grip"
+        seg_type = str(segment.segment_type).lower()
+        if seg_type == "corner" and max(0.0, risk_level) > 0.7 and self.tyre_wear > 0.4:
+            return "combined_load_exceedance"
+        if max(0.0, risk_level) > 0.8:
+            return "speed_exceedance"
+        return "stochastic_incident"
+
     def _compute_reward(self, seg_time, pos_delta, crash, risk_level, terminated):
         # approximate lap-equivalent terms for reward shaping; still segment-based
         time_term = -seg_time / 100.0
@@ -407,7 +455,9 @@ class F1RaceEnv(gym.Env):
         reward = time_term + pos_term + progress_term
 
         if self.regime == RaceRegime.UNCONSTRAINED:
+            # performance-oriented: explicit reward for positive risk
             reward += 0.40 * max(0.0, risk_level) / max(self.n_segments, 1)
+            # crashes are penalised but less severely than other regimes
             if crash:
                 reward -= 8.0
             if self.catastrophic_event:
@@ -415,6 +465,7 @@ class F1RaceEnv(gym.Env):
             return reward
 
         if self.regime == RaceRegime.RULEBOOK:
+            # stronger crash penalties and modest discouragement of excess risk
             if crash:
                 reward -= 20.0
             if self.catastrophic_event:
@@ -422,18 +473,38 @@ class F1RaceEnv(gym.Env):
 
             reward -= 1.0 * max(0.0, risk_level - 0.4) / max(self.n_segments, 1)
 
+            # soft shaping penalty if we are deep into the race without a pitstop
             if self.current_lap > int(0.6 * self.n_laps) and self.pit_count < 1:
                 reward -= 3.0 / max(self.n_segments, 1)
 
             if terminated:
+                # terminal rule: at least one pitstop required in dry conditions
                 if self.current_lap >= self.n_laps and self.pit_count < 1:
                     reward -= 300.0
+
+                # simple dry-compound usage rule (wet race exception)
+                dry_indices = {
+                    self.compound_to_idx["SOFT"],
+                    self.compound_to_idx["MEDIUM"],
+                    self.compound_to_idx["HARD"],
+                }
+                used_dry = {c for c in self.used_compounds if c in dry_indices}
+                wet_indices = {
+                    self.compound_to_idx["INTERMEDIATE"],
+                    self.compound_to_idx["WET"],
+                }
+                used_wet = any(c in wet_indices for c in self.used_compounds)
+                if self.current_lap >= self.n_laps and not used_wet and len(used_dry) < 2:
+                    # moderate penalty for failing to use two dry compounds
+                    reward -= 80.0
+
                 if self.pit_count > 3:
                     reward -= 20.0 * (self.pit_count - 3)
 
             return reward
 
         if self.regime == RaceRegime.SAFE:
+            # strong aversion to risk and high wear
             reward -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
             reward -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
 
