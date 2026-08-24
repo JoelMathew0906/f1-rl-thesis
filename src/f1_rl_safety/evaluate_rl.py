@@ -101,6 +101,16 @@ def _episode_rows(
 
     mean_risk = float(np.mean(ep_risk)) if ep_risk else 0.0
 
+    # reward component totals; older checkpoints may not have these attributes
+    reward_time_total = getattr(base_env, "reward_time_total", None)
+    reward_risk_total = getattr(base_env, "reward_risk_total", None)
+    reward_crash_total = getattr(base_env, "reward_crash_total", None)
+    reward_pit_total = getattr(base_env, "reward_pit_total", None)
+    reward_compound_total = getattr(base_env, "reward_compound_total", None)
+    reward_compliance_total = getattr(base_env, "reward_compliance_total", None)
+    reward_lap_completion_total = getattr(base_env, "reward_lap_completion_total", None)
+    episode_return = getattr(base_env, "episode_return", None)
+
     common = {
         # original aggregate-like fields (now per-episode)
         "algo": algo,
@@ -114,7 +124,7 @@ def _episode_rows(
         "pitstops": pit_count,
         "mean_risk": mean_risk,
         "pitstop_distribution": pitstop_distribution,
-        # new episode-level fields
+        # episode-level fields
         "algorithm": algo,
         "training_budget": steps_or_episodes,
         "completed_laps": completed_laps,
@@ -125,6 +135,15 @@ def _episode_rows(
         "first_crash_reason": first_crash_reason or "",
         "final_crash_site": final_crash_site or "",
         "final_crash_reason": final_crash_reason or "",
+        # reward component totals (may be None for older checkpoints)
+        "reward_time_total": reward_time_total,
+        "reward_risk_total": reward_risk_total,
+        "reward_crash_total": reward_crash_total,
+        "reward_pit_total": reward_pit_total,
+        "reward_compound_total": reward_compound_total,
+        "reward_compliance_total": reward_compliance_total,
+        "reward_lap_completion_total": reward_lap_completion_total,
+        "episode_return": episode_return,
     }
 
     rows: list[Dict[str, Any]] = []
@@ -252,7 +271,7 @@ def evaluate_model(
 
     Returns a list of per-episode / per-crash rows combining
     aggregate summary fields with crash-level and episode-level
-    information.
+    information, including reward component totals when available.
     """
 
     env = _make_env(regime, algo, seed)
