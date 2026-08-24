@@ -173,6 +173,16 @@ class F1RaceEnv(gym.Env):
         self.last_segment: Optional[TrackSegment] = None
         self.crash_log: list[dict[str, Any]] = []
 
+        # reward component accumulators for per-episode decomposition
+        self.reward_time_total = 0.0
+        self.reward_risk_total = 0.0
+        self.reward_crash_total = 0.0
+        self.reward_pit_total = 0.0
+        self.reward_compound_total = 0.0
+        self.reward_compliance_total = 0.0
+        self.reward_lap_completion_total = 0.0
+        self.episode_return = 0.0
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.rng = np.random.default_rng(seed)
@@ -284,6 +294,9 @@ class F1RaceEnv(gym.Env):
         reward = self._compute_reward(
             lap_time, pos_delta, crash, risk_level, terminated
         )
+
+        # accumulate episode return after each step for logging
+        self.episode_return += reward
 
         obs = self._get_obs()
         info = {
@@ -447,102 +460,149 @@ class F1RaceEnv(gym.Env):
         return "stochastic_incident"
 
     def _compute_reward(self, seg_time, pos_delta, crash, risk_level, terminated):
-        # approximate lap-equivalent terms for reward shaping; still segment-based
+        """Compute reward and log per-component contributions.
+
+        Reward ADJUSTMENT V3: add dense survival/lap shaping, milestone
+        rulebook incentives, and per-regime risk/crash differentiation
+        while keeping crash probability and dynamics unchanged.
+        """
+        # base performance terms
         time_term = -seg_time / 100.0
         pos_term = (10 - self.position) / 10.0
-        progress_term = -0.02 / max(self.n_segments, 1)
 
-        reward = time_term + pos_term + progress_term
+        # dense survival/progress shaping: small positive per step
+        progress_step = 0.02  # REWARD ADJUSTMENT V3 — dense step survival shaping
+
+        # lap completion detection: we are at start of a lap (segment_idx == 0)
+        # and did not crash on the last segment
+        lap_completed = (self.current_segment_idx == 0 and not crash)
+        lap_completion_bonus = 0.0
+        if lap_completed:
+            lap_completion_bonus = 0.5  # REWARD ADJUSTMENT V3 — per-lap completion bonus
+
+        # episode completion bonus when finishing the race without crash
+        episode_completion_bonus = 0.0
+        if terminated and self.current_lap >= self.n_laps and not self.crashed:
+            if self.regime == RaceRegime.UNCONSTRAINED:
+                episode_completion_bonus = 0.8 * self.n_laps
+            elif self.regime == RaceRegime.RULEBOOK:
+                episode_completion_bonus = 0.7 * self.n_laps
+            elif self.regime == RaceRegime.SAFE:
+                episode_completion_bonus = 1.0 * self.n_laps
+
+        reward_time = time_term + pos_term
+        reward_lap_completion = progress_step + lap_completion_bonus + episode_completion_bonus
+
+        reward_risk = 0.0
+        reward_crash = 0.0
+        reward_pit = 0.0
+        reward_compound = 0.0
+        reward_compliance = 0.0
 
         if self.regime == RaceRegime.UNCONSTRAINED:
             # performance-oriented: explicit reward for positive risk
-            reward += 1.5 * max(0.0, risk_level) / max(self.n_segments, 1)  # REWARD ADJUSTMENT V2 — strengthen risk bonus in unconstrained regime
+            reward_risk += 1.5 * max(0.0, risk_level) / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — strengthened risk bonus in unconstrained regime
             # crashes are penalised but less severely than other regimes
             if crash:
-                reward -= 8.0
+                reward_crash -= 8.0
             if self.catastrophic_event:
-                reward -= 25.0
-            # REWARD ADJUSTMENT V2 — emphasise fast overall race time at episode end in unconstrained regime
-            if terminated and self.current_lap >= self.n_laps:
-                reward += 0.1 * (self.n_laps / max(self.race_time, 1.0))
-            return reward
+                reward_crash -= 25.0
 
-        if self.regime == RaceRegime.RULEBOOK:
+        elif self.regime == RaceRegime.RULEBOOK:
             # stronger crash penalties and modest discouragement of excess risk
             if crash:
-                reward -= 20.0
+                reward_crash -= 20.0
             if self.catastrophic_event:
-                reward -= 60.0
+                reward_crash -= 60.0
 
-            reward -= 1.0 * max(0.0, risk_level - 0.4) / max(self.n_segments, 1)
+            reward_risk -= 1.0 * max(0.0, risk_level - 0.4) / max(self.n_segments, 1)
 
             # soft shaping penalty if we are deep into the race without a pitstop
-            if self.current_lap > int(0.6 * self.n_laps) and self.pit_count < 1:
-                reward -= 3.0 / max(self.n_segments, 1)
+            if self.current_lap > int(0.3 * self.n_laps) and self.pit_count < 1:
+                reward_pit -= 0.05 / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — early penalty for no pit in RULEBOOK regime
 
-            # REWARD ADJUSTMENT V2 — per-step penalty for excessive stint length on one compound in RULEBOOK regime
+            # per-step penalty for excessive stint length on one compound
             if self.tyre_age > 20 and self.pit_count < 1:
-                reward -= 0.1 / max(self.n_segments, 1)
+                reward_compound -= 0.1 / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — long-stint penalty in RULEBOOK regime
+
+            # dense incentives for pit stop and compound diversity once achieved
+            dry_indices = {
+                self.compound_to_idx["SOFT"],
+                self.compound_to_idx["MEDIUM"],
+                self.compound_to_idx["HARD"],
+            }
+            used_dry = {c for c in self.used_compounds if c in dry_indices}
+            wet_indices = {
+                self.compound_to_idx["INTERMEDIATE"],
+                self.compound_to_idx["WET"],
+            }
+            used_wet = any(c in wet_indices for c in self.used_compounds)
+
+            if self.pit_count >= 1 and int(0.3 * self.n_laps) <= self.current_lap <= int(0.8 * self.n_laps):
+                reward_pit += 0.03  # REWARD ADJUSTMENT V3 — dense pit-window reward in RULEBOOK regime
+
+            if not used_wet and len(used_dry) >= 2:
+                reward_compound += 0.02  # REWARD ADJUSTMENT V3 — dense compound-diversity reward in RULEBOOK regime
 
             if terminated:
                 # terminal rule: at least one pitstop required in dry conditions
                 if self.current_lap >= self.n_laps and self.pit_count < 1:
-                    reward -= 300.0
+                    reward_compliance -= 300.0
 
                 # simple dry-compound usage rule (wet race exception)
-                dry_indices = {
-                    self.compound_to_idx["SOFT"],
-                    self.compound_to_idx["MEDIUM"],
-                    self.compound_to_idx["HARD"],
-                }
-                used_dry = {c for c in self.used_compounds if c in dry_indices}
-                wet_indices = {
-                    self.compound_to_idx["INTERMEDIATE"],
-                    self.compound_to_idx["WET"],
-                }
-                used_wet = any(c in wet_indices for c in self.used_compounds)
                 if self.current_lap >= self.n_laps and not used_wet and len(used_dry) < 2:
-                    # moderate penalty for failing to use two dry compounds
-                    reward -= 80.0
+                    reward_compliance -= 80.0
 
                 if self.pit_count > 3:
-                    reward -= 20.0 * (self.pit_count - 3)
+                    reward_pit -= 20.0 * (self.pit_count - 3)
 
-                # REWARD ADJUSTMENT V2 — bonus for satisfying mandatory pit stop in RULEBOOK regime
+                # bonus for satisfying mandatory pit stop
                 if self.current_lap >= self.n_laps and self.pit_count >= 1:
-                    reward += 5.0
+                    reward_pit += 5.0
 
-                # REWARD ADJUSTMENT V2 — bonus for using at least two dry compounds in RULEBOOK regime
+                # bonus for using at least two dry compounds
                 if self.current_lap >= self.n_laps and not used_wet and len(used_dry) >= 2:
-                    reward += 2.0
+                    reward_compound += 2.0
 
-            return reward
-
-        if self.regime == RaceRegime.SAFE:
+        elif self.regime == RaceRegime.SAFE:
             # strong aversion to risk and high wear
-            reward -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
-            reward -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
-            reward -= 0.01 * max(0.0, risk_level)  # REWARD ADJUSTMENT V2 — per-step risk discouragement in SAFE regime
+            reward_risk -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
+            reward_risk -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
+            reward_risk -= 0.01 * max(0.0, risk_level)  # REWARD ADJUSTMENT V3 — per-step risk discouragement in SAFE regime
 
             if crash:
-                reward -= 300.0  # REWARD ADJUSTMENT V2 — strengthen crash penalty in SAFE regime
+                reward_crash -= 300.0  # REWARD ADJUSTMENT V3 — strong crash penalty in SAFE regime
             if self.catastrophic_event:
-                reward -= 1000.0  # REWARD ADJUSTMENT V2 — strengthen catastrophic penalty in SAFE regime
+                reward_crash -= 1000.0  # REWARD ADJUSTMENT V3 — strong catastrophic penalty in SAFE regime
 
             if self.pit_count > 3:
-                reward -= 15.0 * (self.pit_count - 3)
+                reward_pit -= 15.0 * (self.pit_count - 3)
 
-            reward -= 3.0 * max(0.0, self.tyre_wear - 0.65) / max(
+            # high-wear penalty
+            reward_compound -= 3.0 * max(0.0, self.tyre_wear - 0.65) / max(
                 self.n_segments, 1
             )
 
             if terminated and self.current_lap >= self.n_laps and self.pit_count < 1:
-                reward -= 40.0
+                reward_compliance -= 40.0
 
-            # REWARD ADJUSTMENT V2 — reward completing race without crash in SAFE regime
-            if terminated and self.current_lap >= self.n_laps and not self.crashed:
-                reward += 0.5 * self.n_laps
+        # final reward and accumulation of components
+        reward = (
+            reward_time
+            + reward_lap_completion
+            + reward_risk
+            + reward_crash
+            + reward_pit
+            + reward_compound
+            + reward_compliance
+        )
 
-            return reward
+        self.reward_time_total += reward_time
+        self.reward_lap_completion_total += reward_lap_completion
+        self.reward_risk_total += reward_risk
+        self.reward_crash_total += reward_crash
+        self.reward_pit_total += reward_pit
+        self.reward_compound_total += reward_compound
+        self.reward_compliance_total += reward_compliance
 
         return reward
