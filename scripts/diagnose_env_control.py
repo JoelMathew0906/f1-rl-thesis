@@ -699,17 +699,34 @@ class PPOActionRecord:
 def load_ppo_model(regime: RaceRegime) -> Tuple[PPO | None, str]:
     """Load the 200000-step seed-0 PPO model for the given regime.
 
-    Uses models/ppo_<regime>.zip as committed in the repository.
+    Tries multiple candidate paths without raising if none exist.
     Returns (model, status) where status is "OK" or an error description.
     """
-    model_path = Path("models") / f"ppo_{regime.name.lower()}.zip"
-    if not model_path.exists():
-        return None, f"MODEL_NOT_FOUND:{model_path}"
+    candidates: List[Path] = []
+
+    # models/
+    candidates.append(Path("models") / f"ppo_{regime.name.lower()}.zip")
+    candidates.append(Path("models") / f"ppo_{regime.name.lower()}")
+
+    # models_v2/
+    candidates.append(Path("models_v2") / f"ppo_{regime.name.lower()}.zip")
+    candidates.append(Path("models_v2") / f"ppo_{regime.name.lower()}")
+
+    # models_v2_eval/
+    candidates.append(Path("models_v2_eval") / f"ppo_{regime.name.lower()}.zip")
+    candidates.append(Path("models_v2_eval") / f"ppo_{regime.name.lower()}")
+
+    existing = [p for p in candidates if p.exists()]
+
+    if not existing:
+        return None, f"MODEL_NOT_FOUND:{','.join(str(p) for p in candidates)}"
+
+    model_path = existing[0]
     try:
         model = PPO.load(str(model_path))
-        return model, "OK"
+        return model, f"OK:{model_path}"
     except Exception as e:
-        return None, f"MODEL_LOAD_ERROR:{e}"
+        return None, f"MODEL_LOAD_ERROR:{model_path}:{e}"
 
 
 def ppo_action_distribution_audit(regime: RaceRegime) -> Path:
@@ -728,7 +745,7 @@ def ppo_action_distribution_audit(regime: RaceRegime) -> Path:
     model, status = load_ppo_model(regime)
 
     if model is None:
-        # Log a single row indicating failure
+        print(f"[E] PPO model not loaded for {regime.name.lower()}: {status}")
         records.append(
             PPOActionRecord(
                 regime=regime.name.lower(),
