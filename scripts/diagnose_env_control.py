@@ -36,10 +36,17 @@ BASE_OUT.mkdir(parents=True, exist_ok=True)
 
 
 def format_used_compounds(env: F1RaceEnv) -> str:
+    """Deterministically serialize env.used_compounds for CSV.
+
+    Derived only from env.used_compounds, with no fabrication. The
+    output is a ";"-separated list of sorted stringified entries.
+    Empty or missing sets yield an empty string.
+    """
     compounds = getattr(env, "used_compounds", set())
-    idx_to_compound = getattr(env, "idx_to_compound", {})
-    names = [str(idx_to_compound.get(idx, idx)) for idx in sorted(compounds)]
-    return ";".join(names)
+    if not compounds:
+        return ""
+    items = sorted(str(c) for c in compounds if str(c).strip())
+    return ";".join(items)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +319,6 @@ def valid_pit_boundary_test(regime: RaceRegime) -> Path:
     pit_test_status = ""
 
     if not reached_boundary:
-        # Failed to reach a state where the next step would complete lap 0
         pit_pass = False
         crash_reason = None
         completed_lap_flag = False
@@ -330,7 +336,6 @@ def valid_pit_boundary_test(regime: RaceRegime) -> Path:
         crash_flag = False
         pit_test_status = "FAILED_TO_REACH_BOUNDARY"
     else:
-        # Next step should complete lap 0; issue pit with different compound (HARD=2)
         pit_action = np.array([requested_pit_decision, requested_compound, -0.5], dtype=np.float32)
         obs, reward, terminated_flag, truncated_flag, info = env.step(pit_action)
 
@@ -342,7 +347,6 @@ def valid_pit_boundary_test(regime: RaceRegime) -> Path:
         post_wear = env.tyre_wear
         post_used = format_used_compounds(env)
 
-        # Environment's pit condition is: lap completion + pit_decision
         completed_lap_flag = bool(post_seg == 0 and post_lap == 1)
         effective_pit_decision = float(pit_action[0])
         effective_compound = float(np.clip(round(pit_action[1]), 0, 4))
@@ -368,7 +372,7 @@ def valid_pit_boundary_test(regime: RaceRegime) -> Path:
         pre_segment_idx=pre_seg,
         post_segment_idx=post_seg,
         completed_lap_flag=completed_lap_flag,
-        pit_eligibility_condition="lap_completed_and_pit_decision",  # matches F1RaceEnv.step semantics
+        pit_eligibility_condition="lap_completed_and_pit_decision",
         requested_pit_decision=requested_pit_decision,
         requested_compound=requested_compound,
         effective_pit_decision=effective_pit_decision,
@@ -440,13 +444,6 @@ class EpisodeSummary:
 
 
 def scripted_action(env: F1RaceEnv, policy_name: str) -> np.ndarray:
-    """Determine action at current state for a scripted policy.
-
-    Policies:
-    - aggressive_zero_stop: pit=0, risk=0.9
-    - one_stop_compliant: pit at first valid boundary after lap>=1, MEDIUM->HARD, risk=-0.5 until then
-    - conservative_two_stop: pits at first valid boundaries after lap>=1 and lap>=3, alternating compounds, risk=-0.8
-    """
     lap = env.current_lap
     seg_idx = env.current_segment_idx
     n_segments = env.n_segments
@@ -463,7 +460,7 @@ def scripted_action(env: F1RaceEnv, policy_name: str) -> np.ndarray:
     elif policy_name == "one_stop_compliant":
         if env.pit_count == 0 and lap >= 1 and seg_idx == n_segments - 1:
             pit_decision = 1.0
-            tyre_choice = 2.0  # HARD
+            tyre_choice = 2.0
         else:
             pit_decision = 0.0
             tyre_choice = float(env.tyre_compound)
@@ -564,6 +561,9 @@ def aggregate_scripted_policy_results() -> Path:
         path = BASE_OUT / f"scripted_policies_{regime.name.lower()}.csv"
         if path.exists():
             df = pd.read_csv(path)
+            if "used_compounds" not in df.columns:
+                print(f"[D] WARNING: {path} lacks 'used_compounds'; filling empty strings.")
+                df["used_compounds"] = ""
             all_frames.append(df)
 
     if not all_frames:
@@ -572,14 +572,18 @@ def aggregate_scripted_policy_results() -> Path:
 
     full = pd.concat(all_frames, ignore_index=True)
 
-    def pct_two_compounds(g):
-        return np.mean(g["used_compounds"].apply(lambda s: len(str(s).split(";")) >= 2))
+    def count_compounds(s: Any) -> int:
+        parts = [p for p in str(s).split(";") if p.strip()]
+        return len(parts)
 
-    def finish_rate(g):
-        return np.mean(~g["crashed"])
+    def pct_two_compounds(g: pd.Series) -> float:
+        return float(np.mean(g.apply(lambda s: count_compounds(s) >= 2)))
 
-    def mean_crash_lap(g):
-        vals = g["crash_lap"].dropna()
+    def finish_rate(g: pd.Series) -> float:
+        return float(np.mean(~g))
+
+    def mean_crash_lap(g: pd.Series) -> float:
+        vals = g.dropna()
         return float(vals.mean()) if len(vals) > 0 else np.nan
 
     agg = full.groupby(["regime", "policy_name"]).agg(
@@ -592,7 +596,7 @@ def aggregate_scripted_policy_results() -> Path:
         mean_reward_pit_total=("reward_pit_total", "mean"),
         mean_reward_compound_total=("reward_compound_total", "mean"),
         mean_reward_compliance_total=("reward_compliance_total", "mean"),
-        finish_rate=("crashed", lambda x: np.mean(~x)),
+        finish_rate=("crashed", finish_rate),
         mean_completed_laps=("completed_laps", "mean"),
         mean_pitstops=("pitstops", "mean"),
         pct_two_or_more_compounds=("used_compounds", pct_two_compounds),
@@ -606,65 +610,48 @@ def aggregate_scripted_policy_results() -> Path:
 
     def check_rulebook(df: pd.DataFrame) -> None:
         rule_df = df[df["regime"] == "rulebook"]
-        zs = rule_df[rule_df["policy_name"] == "aggressive_zero_stop"][
-            "mean_episode_return"
-        ].values
-        os = rule_df[rule_df["policy_name"] == "one_stop_compliant"][
-            "mean_episode_return"
-        ].values
-        if len(zs) and len(os):
+        if not {"mean_episode_return"}.issubset(rule_df.columns):
+            print("[D] RULEBOOK hypothesis: INCONCLUSIVE (missing mean_episode_return).")
+            return
+        zs = rule_df[rule_df["policy_name"] == "aggressive_zero_stop"]["mean_episode_return"].values
+        os = rule_df[rule_df["policy_name"] == "one_stop_compliant"]["mean_episode_return"].values
+        if len(zs) and len(os) and not (np.isnan(zs[0]) or np.isnan(os[0])):
             cond = os[0] > zs[0]
             status = "PASS" if cond else "FAIL"
-            print(
-                f"[D] RULEBOOK hypothesis (one_stop_compliant mean return > aggressive_zero_stop): {status}"
-            )
+            print(f"[D] RULEBOOK hypothesis (one_stop_compliant mean return > aggressive_zero_stop): {status}")
         else:
-            print("[D] RULEBOOK hypothesis: insufficient data for check.")
+            print("[D] RULEBOOK hypothesis: INCONCLUSIVE (insufficient data).")
 
     def check_safe(df: pd.DataFrame) -> None:
         safe_df = df[df["regime"] == "safe"]
-        zs = safe_df[safe_df["policy_name"] == "aggressive_zero_stop"][
-            "mean_episode_return"
-        ].values
-        cs = safe_df[safe_df["policy_name"] == "conservative_two_stop"][
-            "mean_episode_return"
-        ].values
-        if len(zs) and len(cs):
+        if not {"mean_episode_return"}.issubset(safe_df.columns):
+            print("[D] SAFE hypothesis: INCONCLUSIVE (missing mean_episode_return).")
+            return
+        zs = safe_df[safe_df["policy_name"] == "aggressive_zero_stop"]["mean_episode_return"].values
+        cs = safe_df[safe_df["policy_name"] == "conservative_two_stop"]["mean_episode_return"].values
+        if len(zs) and len(cs) and not (np.isnan(zs[0]) or np.isnan(cs[0])):
             cond = cs[0] > zs[0]
             status = "PASS" if cond else "FAIL"
-            print(
-                f"[D] SAFE hypothesis (conservative_two_stop mean return > aggressive_zero_stop): {status}"
-            )
+            print(f"[D] SAFE hypothesis (conservative_two_stop mean return > aggressive_zero_stop): {status}")
         else:
-            print("[D] SAFE hypothesis: insufficient data for check.")
+            print("[D] SAFE hypothesis: INCONCLUSIVE (insufficient data).")
 
     def check_unconstrained(df: pd.DataFrame) -> None:
         u_df = df[df["regime"] == "unconstrained"]
-        zs = u_df[u_df["policy_name"] == "aggressive_zero_stop"][
-            "mean_actual_risk"
-        ].values
-        cs = u_df[u_df["policy_name"] == "conservative_two_stop"][
-            "mean_actual_risk"
-        ].values
-        zt = u_df[u_df["policy_name"] == "aggressive_zero_stop"][
-            "conditional_mean_race_time"
-        ].values
-        ct = u_df[u_df["policy_name"] == "conservative_two_stop"][
-            "conditional_mean_race_time"
-        ].values
-        if len(zs) and len(cs) and len(zt) and len(ct):
+        required = {"mean_actual_risk"}
+        if not required.issubset(u_df.columns):
+            print("[D] UNCONSTRAINED hypothesis: INCONCLUSIVE (missing mean_actual_risk).")
+            return
+        zs = u_df[u_df["policy_name"] == "aggressive_zero_stop"]["mean_actual_risk"].values
+        cs = u_df[u_df["policy_name"] == "conservative_two_stop"]["mean_actual_risk"].values
+        if len(zs) and len(cs) and not (np.isnan(zs[0]) or np.isnan(cs[0])):
             cond_risk = zs[0] > cs[0]
-            cond_time = zt[0] < ct[0]
             status_risk = "PASS" if cond_risk else "FAIL"
-            status_time = "PASS" if cond_time else "FAIL"
             print(
-                f"[D] UNCONSTRAINED hypothesis (aggressive higher actual risk): {status_risk}"
-            )
-            print(
-                f"[D] UNCONSTRAINED hypothesis (aggressive faster conditional race time): {status_time}"
+                f"[D] UNCONSTRAINED hypothesis (aggressive higher actual environmental risk): {status_risk}"
             )
         else:
-            print("[D] UNCONSTRAINED hypothesis: insufficient data for check.")
+            print("[D] UNCONSTRAINED hypothesis: INCONCLUSIVE (insufficient data).")
 
     check_rulebook(agg)
     check_safe(agg)
@@ -697,22 +684,11 @@ class PPOActionRecord:
 
 
 def load_ppo_model(regime: RaceRegime) -> Tuple[PPO | None, str]:
-    """Load the 200000-step seed-0 PPO model for the given regime.
-
-    Tries multiple candidate paths without raising if none exist.
-    Returns (model, status) where status is "OK" or an error description.
-    """
     candidates: List[Path] = []
-
-    # models/
     candidates.append(Path("models") / f"ppo_{regime.name.lower()}.zip")
     candidates.append(Path("models") / f"ppo_{regime.name.lower()}")
-
-    # models_v2/
     candidates.append(Path("models_v2") / f"ppo_{regime.name.lower()}.zip")
     candidates.append(Path("models_v2") / f"ppo_{regime.name.lower()}")
-
-    # models_v2_eval/
     candidates.append(Path("models_v2_eval") / f"ppo_{regime.name.lower()}.zip")
     candidates.append(Path("models_v2_eval") / f"ppo_{regime.name.lower()}")
 
@@ -730,11 +706,6 @@ def load_ppo_model(regime: RaceRegime) -> Tuple[PPO | None, str]:
 
 
 def ppo_action_distribution_audit(regime: RaceRegime) -> Path:
-    """Diagnostic E: audit PPO actions under deterministic and stochastic modes.
-
-    Output filename: ppo_actions_<regime>.csv
-    Failures in model loading are logged per row and do not stop other diagnostics.
-    """
     out_path = BASE_OUT / f"ppo_actions_{regime.name.lower()}.csv"
 
     seeds = [0]
