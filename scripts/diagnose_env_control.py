@@ -2,19 +2,19 @@
 reward ordering, and PPO action distributions in F1RaceEnv.
 
 This script is read-only with respect to training/evaluation APIs and
-models. It runs four diagnostics:
+models. It runs five diagnostics:
 
 A. Forced action-transition matrix
 B. Controlled crash-hazard sensitivity
-C. Scripted-policy reward ordering
-D. PPO action-distribution audit
+C. Valid lap-boundary pit control test
+D. Scripted-policy reward ordering
+E. PPO action-distribution audit
 
 Outputs human-readable console logs and CSV files under outputs/debug/diagnostics.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -25,18 +25,36 @@ from stable_baselines3 import PPO
 
 from src.f1_rl_safety.f1_env import F1RaceEnv, RaceRegime
 from src.f1_rl_safety.wrappers import DiscreteF1ActionWrapper
-from src.f1_rl_safety.evaluate_rl import _unwrap_env
 
 
 BASE_OUT = Path("outputs") / "debug" / "diagnostics"
 BASE_OUT.mkdir(parents=True, exist_ok=True)
 
 
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+
+
+def format_used_compounds(env: F1RaceEnv) -> str:
+    compounds = getattr(env, "used_compounds", set())
+    idx_to_compound = getattr(env, "idx_to_compound", {})
+    names = [str(idx_to_compound.get(idx, idx)) for idx in sorted(compounds)]
+    return ";".join(names)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic A: Forced action-transition matrix
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class TransitionRecord:
-    action_index: int
-    action_vector: Tuple[float, float, float]
     regime: str
+    action_index: int
+    pit_decision: float
+    tyre_choice: float
+    risk_level: float
     pre_lap: int
     post_lap: int
     pre_segment_idx: int
@@ -57,25 +75,18 @@ class TransitionRecord:
     crash: bool
 
 
-def format_used_compounds(env: F1RaceEnv) -> str:
-    compounds = getattr(env, "used_compounds", set())
-    idx_to_compound = getattr(env, "idx_to_compound", {})
-    names = [str(idx_to_compound.get(idx, idx)) for idx in sorted(compounds)]
-    return ";".join(names)
-
-
 def forced_action_transition_matrix(regime: RaceRegime) -> Path:
     """Diagnostic A: force a grid of actions and log state deltas.
 
     Uses the underlying continuous F1RaceEnv action space:
     [pit_decision (0/1), tyre_choice (0-4), risk_level (-1..1)].
+    Output filename: forced_transitions_<regime>.csv
     """
     out_path = BASE_OUT / f"forced_transitions_{regime.name.lower()}.csv"
 
     records: List[TransitionRecord] = []
     env = F1RaceEnv(regime=regime, seed=0)
 
-    # Define a compact set of diagnostic actions.
     pit_options = [0.0, 1.0]
     tyre_options = [0.0, 1.0, 2.0, 3.0, 4.0]
     risk_levels = [-1.0, -0.5, 0.0, 0.5, 1.0]
@@ -84,7 +95,6 @@ def forced_action_transition_matrix(regime: RaceRegime) -> Path:
     for pit in pit_options:
         for tyre in tyre_options:
             for risk in risk_levels:
-                # reset to a comparable state before each forced action
                 obs, _ = env.reset(seed=0)
 
                 pre_lap = env.current_lap
@@ -109,9 +119,11 @@ def forced_action_transition_matrix(regime: RaceRegime) -> Path:
 
                 records.append(
                     TransitionRecord(
-                        action_index=action_index,
-                        action_vector=(float(pit), float(tyre), float(risk)),
                         regime=regime.name.lower(),
+                        action_index=action_index,
+                        pit_decision=float(pit),
+                        tyre_choice=float(tyre),
+                        risk_level=float(risk),
                         pre_lap=pre_lap,
                         post_lap=post_lap,
                         pre_segment_idx=pre_seg,
@@ -143,6 +155,11 @@ def forced_action_transition_matrix(regime: RaceRegime) -> Path:
     return out_path
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic B: Controlled crash-hazard sensitivity
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class HazardRecord:
     regime: str
@@ -160,19 +177,18 @@ def controlled_hazard_sensitivity(regime: RaceRegime) -> Path:
     """Diagnostic B: crash-probability sensitivity to state and action.
 
     Uses F1RaceEnv._segment_crash_prob on representative configurations.
+    Output filename: hazard_sensitivity_<regime>.csv
     """
     out_path = BASE_OUT / f"hazard_sensitivity_{regime.name.lower()}.csv"
 
     env = F1RaceEnv(regime=regime, seed=0)
     segments = env.track_segments
 
-    # pick first corner and first straight
     corner = next(s for s in segments if str(s.segment_type).lower() == "corner")
     straight = next(s for s in segments if str(s.segment_type).lower() == "straight")
 
-    scenarios: List[Tuple[str, TrackSegment, int, int, float, float]] = []
+    scenarios: List[Tuple[str, Any, int, int, float, float]] = []
 
-    # description, segment, tyre_compound, tyre_age, tyre_wear, risk_level
     scenarios.append(("lowest risk, fresh tyre, corner", corner, 1, 0, 0.0, -1.0))
     scenarios.append(("highest risk, fresh tyre, corner", corner, 1, 0, 0.0, 1.0))
     scenarios.append(("lowest risk, worn tyre, corner", corner, 1, 24, 1.0, -1.0))
@@ -209,6 +225,135 @@ def controlled_hazard_sensitivity(regime: RaceRegime) -> Path:
     return out_path
 
 
+# ---------------------------------------------------------------------------
+# Diagnostic C: Valid lap-boundary pit control test
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PitBoundaryRecord:
+    regime: str
+    pre_lap: int
+    post_lap: int
+    pre_segment_idx: int
+    post_segment_idx: int
+    completed_lap: bool
+    pre_pit_count: int
+    post_pit_count: int
+    pre_tyre_compound: int
+    post_tyre_compound: int
+    pre_tyre_age: int
+    post_tyre_age: int
+    pre_tyre_wear: float
+    post_tyre_wear: float
+    pre_used_compounds: str
+    post_used_compounds: str
+    reward_time_total: float | None
+    reward_lap_completion_total: float | None
+    reward_risk_total: float | None
+    reward_crash_total: float | None
+    reward_pit_total: float | None
+    reward_compound_total: float | None
+    reward_compliance_total: float | None
+    episode_return: float | None
+    terminated: bool
+    crash: bool
+    pit_pass: bool
+
+
+def valid_pit_boundary_test(regime: RaceRegime) -> Path:
+    """Diagnostic C: ensure pit control works at lap boundary.
+
+    Progress deterministically with low risk and no pit to the final
+    segment of lap 0, then issue a pit action at the next step with a
+    different compound.
+
+    Output filename: valid_pit_boundary_test_<regime>.csv
+    Prints PASS if pit_count increments and tyre_compound changes.
+    """
+    out_path = BASE_OUT / f"valid_pit_boundary_test_{regime.name.lower()}.csv"
+
+    env = F1RaceEnv(regime=regime, seed=0)
+    obs, _ = env.reset(seed=0)
+
+    # Progress with low risk, no pit until just before lap completion.
+    while True:
+        # Stop when we are at the last segment of lap 0
+        if env.current_lap == 0 and env.current_segment_idx == env.n_segments - 1:
+            break
+        action = np.array([0.0, float(env.tyre_compound), -0.5], dtype=np.float32)
+        obs, reward, terminated, truncated, info = env.step(action)
+        if terminated or truncated:
+            break
+
+    pre_lap = env.current_lap
+    pre_seg = env.current_segment_idx
+    pre_pit = env.pit_count
+    pre_compound = env.tyre_compound
+    pre_age = env.tyre_age
+    pre_wear = env.tyre_wear
+    pre_used = format_used_compounds(env)
+
+    # Next step should complete the lap; issue pit with different compound (HARD=2)
+    pit_action = np.array([1.0, 2.0, -0.5], dtype=np.float32)
+    obs, reward, terminated, truncated, info = env.step(pit_action)
+
+    post_lap = env.current_lap
+    post_seg = env.current_segment_idx
+    post_pit = env.pit_count
+    post_compound = env.tyre_compound
+    post_age = env.tyre_age
+    post_wear = env.tyre_wear
+    post_used = format_used_compounds(env)
+
+    completed_lap = post_seg == 0 and post_lap == 1
+
+    pit_pass = (post_pit == pre_pit + 1) and (post_compound != pre_compound)
+
+    record = PitBoundaryRecord(
+        regime=regime.name.lower(),
+        pre_lap=pre_lap,
+        post_lap=post_lap,
+        pre_segment_idx=pre_seg,
+        post_segment_idx=post_seg,
+        completed_lap=completed_lap,
+        pre_pit_count=pre_pit,
+        post_pit_count=post_pit,
+        pre_tyre_compound=pre_compound,
+        post_tyre_compound=post_compound,
+        pre_tyre_age=pre_age,
+        post_tyre_age=post_age,
+        pre_tyre_wear=float(pre_wear),
+        post_tyre_wear=float(post_wear),
+        pre_used_compounds=pre_used,
+        post_used_compounds=post_used,
+        reward_time_total=getattr(env, "reward_time_total", None),
+        reward_lap_completion_total=getattr(env, "reward_lap_completion_total", None),
+        reward_risk_total=getattr(env, "reward_risk_total", None),
+        reward_crash_total=getattr(env, "reward_crash_total", None),
+        reward_pit_total=getattr(env, "reward_pit_total", None),
+        reward_compound_total=getattr(env, "reward_compound_total", None),
+        reward_compliance_total=getattr(env, "reward_compliance_total", None),
+        episode_return=getattr(env, "episode_return", None),
+        terminated=bool(terminated),
+        crash=bool(info.get("crash", False)),
+        pit_pass=pit_pass,
+    )
+
+    env.close()
+
+    df = pd.DataFrame([asdict(record)])
+    df.to_csv(out_path, index=False)
+    status = "PASS" if pit_pass else "FAIL"
+    print(f"[C] Valid pit boundary test ({regime.name.lower()}): {status} -> {out_path}")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic D: Scripted-policy reward ordering
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class EpisodeSummary:
     regime: str
@@ -231,16 +376,62 @@ class EpisodeSummary:
     reward_lap_completion_total: float | None
     episode_return: float | None
     mean_risk: float
+    completed_laps: int
+
+
+def scripted_action(env: F1RaceEnv, policy_name: str) -> np.ndarray:
+    """Determine action at current state for a scripted policy.
+
+    Policies:
+    - aggressive_zero_stop: pit=0, risk=0.9
+    - one_stop_compliant: pit at first valid boundary after lap>=1, MEDIUM->HARD, risk=-0.5 until then
+    - conservative_two_stop: pits at first valid boundaries after lap>=1 and lap>=3, alternating compounds, risk=-0.8
+    """
+    lap = env.current_lap
+    seg_idx = env.current_segment_idx
+    n_segments = env.n_segments
+
+    pit_decision = 0.0
+    tyre_choice = float(env.tyre_compound)
+    risk_level = 0.0
+
+    if policy_name == "aggressive_zero_stop":
+        pit_decision = 0.0
+        tyre_choice = float(env.tyre_compound)
+        risk_level = 0.9
+
+    elif policy_name == "one_stop_compliant":
+        # Pit once at first lap boundary after lap>=1
+        # valid boundary: seg_idx == n_segments-1, next step completes lap
+        if env.pit_count == 0 and lap >= 1 and seg_idx == n_segments - 1:
+            pit_decision = 1.0
+            tyre_choice = 2.0  # HARD
+        else:
+            pit_decision = 0.0
+            tyre_choice = float(env.tyre_compound)
+        risk_level = -0.5
+
+    elif policy_name == "conservative_two_stop":
+        # Pits at first valid boundaries after lap>=1 and lap>=3
+        if env.pit_count == 0 and lap >= 1 and seg_idx == n_segments - 1:
+            pit_decision = 1.0
+            # alternate compound from MEDIUM to HARD or SOFT
+            tyre_choice = 2.0 if env.tyre_compound == 1 else 1.0
+        elif env.pit_count == 1 and lap >= 3 and seg_idx == n_segments - 1:
+            pit_decision = 1.0
+            tyre_choice = 1.0 if env.tyre_compound == 2 else 2.0
+        else:
+            pit_decision = 0.0
+            tyre_choice = float(env.tyre_compound)
+        risk_level = -0.8
+
+    else:
+        raise ValueError(f"Unknown policy: {policy_name}")
+
+    return np.array([pit_decision, tyre_choice, risk_level], dtype=np.float32)
 
 
 def run_scripted_policy(env: F1RaceEnv, policy_name: str, seed: int) -> EpisodeSummary:
-    """Run a simple deterministic policy on a single episode.
-
-    Policies:
-    - "aggressive_zero_stop": high risk, never pit
-    - "one_stop_compliant": pit once in mid-race, switch compound
-    - "conservative_two_stop": low risk, two pits
-    """
     obs, _ = env.reset(seed=seed)
     done = False
     ep_risk: List[float] = []
@@ -248,38 +439,7 @@ def run_scripted_policy(env: F1RaceEnv, policy_name: str, seed: int) -> EpisodeS
     crash_segment_id = None
 
     while not done:
-        # decode current lap to drive scripted logic
-        lap = env.current_lap
-
-        if policy_name == "aggressive_zero_stop":
-            pit_decision = 0.0
-            tyre_choice = float(env.tyre_compound)
-            risk_level = 0.9
-        elif policy_name == "one_stop_compliant":
-            # pit once between 20-30 laps, switch compound
-            if 20 <= lap <= 30 and env.pit_count == 0:
-                pit_decision = 1.0
-                # switch from MEDIUM to SOFT or HARD deterministically
-                tyre_choice = float(0 if env.tyre_compound != 0 else 2)
-            else:
-                pit_decision = 0.0
-                tyre_choice = float(env.tyre_compound)
-            risk_level = 0.4
-        elif policy_name == "conservative_two_stop":
-            # pit twice: once ~15, once ~35, lower risk
-            if (15 <= lap <= 20 and env.pit_count == 0) or (
-                35 <= lap <= 40 and env.pit_count == 1
-            ):
-                pit_decision = 1.0
-                tyre_choice = float(env.tyre_compound)
-            else:
-                pit_decision = 0.0
-                tyre_choice = float(env.tyre_compound)
-            risk_level = -0.2
-        else:
-            raise ValueError(f"Unknown policy: {policy_name}")
-
-        action = np.array([pit_decision, tyre_choice, risk_level], dtype=np.float32)
+        action = scripted_action(env, policy_name)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         ep_risk.append(float(info["risk_level"]))
@@ -288,36 +448,39 @@ def run_scripted_policy(env: F1RaceEnv, policy_name: str, seed: int) -> EpisodeS
             crash_lap = env.current_lap
             crash_segment_id = info.get("segment_id")
 
-    base_env = env
-
-    used = format_used_compounds(base_env)
+    used = format_used_compounds(env)
     summary = EpisodeSummary(
-        regime=base_env.regime.name.lower(),
+        regime=env.regime.name.lower(),
         policy_name=policy_name,
         seed=seed,
         episode_index=0,
-        crashed=bool(base_env.crashed),
+        crashed=bool(env.crashed),
         crash_lap=crash_lap,
         crash_segment_id=crash_segment_id,
-        pitstops=int(base_env.pit_count),
+        pitstops=int(env.pit_count),
         used_compounds=used,
-        race_time=float(base_env.race_time),
-        finish_position=int(base_env.position),
-        reward_time_total=getattr(base_env, "reward_time_total", None),
-        reward_risk_total=getattr(base_env, "reward_risk_total", None),
-        reward_crash_total=getattr(base_env, "reward_crash_total", None),
-        reward_pit_total=getattr(base_env, "reward_pit_total", None),
-        reward_compound_total=getattr(base_env, "reward_compound_total", None),
-        reward_compliance_total=getattr(base_env, "reward_compliance_total", None),
-        reward_lap_completion_total=getattr(base_env, "reward_lap_completion_total", None),
-        episode_return=getattr(base_env, "episode_return", None),
+        race_time=float(env.race_time),
+        finish_position=int(env.position),
+        reward_time_total=getattr(env, "reward_time_total", None),
+        reward_risk_total=getattr(env, "reward_risk_total", None),
+        reward_crash_total=getattr(env, "reward_crash_total", None),
+        reward_pit_total=getattr(env, "reward_pit_total", None),
+        reward_compound_total=getattr(env, "reward_compound_total", None),
+        reward_compliance_total=getattr(env, "reward_compliance_total", None),
+        reward_lap_completion_total=getattr(env, "reward_lap_completion_total", None),
+        episode_return=getattr(env, "episode_return", None),
         mean_risk=float(np.mean(ep_risk)) if ep_risk else 0.0,
+        completed_laps=int(env.current_lap),
     )
     return summary
 
 
 def scripted_policy_reward_ordering(regime: RaceRegime) -> Path:
-    """Diagnostic C: scripted policies and reward ordering per regime."""
+    """Diagnostic D: scripted policies and reward ordering per regime.
+
+    Writes per-episode CSV: scripted_policies_<regime>.csv
+    Also contributes to aggregate summary across regimes.
+    """
     out_path = BASE_OUT / f"scripted_policies_{regime.name.lower()}.csv"
 
     seeds = list(range(20))
@@ -338,26 +501,136 @@ def scripted_policy_reward_ordering(regime: RaceRegime) -> Path:
 
     df = pd.DataFrame([asdict(s) for s in summaries])
     df.to_csv(out_path, index=False)
-    print(f"[C] Scripted policy summaries written to {out_path}")
-
-    # Reward ordering checks
-    rule = regime == RaceRegime.RULEBOOK
-    safe = regime == RaceRegime.SAFE
-
-    if rule:
-        zero = df[df["policy_name"] == "aggressive_zero_stop"]["episode_return"].mean()
-        comp = df[df["policy_name"] == "one_stop_compliant"]["episode_return"].mean()
-        print(
-            f"[C] RULEBOOK: mean return compliant one-stop={comp:.3f}, zero-stop={zero:.3f}"
-        )
-    if safe:
-        zero = df[df["policy_name"] == "aggressive_zero_stop"]["episode_return"].mean()
-        cons = df[df["policy_name"] == "conservative_two_stop"]["episode_return"].mean()
-        print(
-            f"[C] SAFE: mean return conservative={cons:.3f}, aggressive={zero:.3f}"
-        )
-
+    print(f"[D] Scripted policy summaries written to {out_path}")
     return out_path
+
+
+def aggregate_scripted_policy_results() -> Path:
+    """Aggregate scripted policy results across all regimes.
+
+    Output filename: scripted_policy_summary_all_regimes.csv
+    Includes mean/Std metrics and hypothesis PASS/FAIL checks.
+    """
+    summary_path = BASE_OUT / "scripted_policy_summary_all_regimes.csv"
+
+    all_frames: List[pd.DataFrame] = []
+    for regime in [RaceRegime.UNCONSTRAINED, RaceRegime.RULEBOOK, RaceRegime.SAFE]:
+        path = BASE_OUT / f"scripted_policies_{regime.name.lower()}.csv"
+        if path.exists():
+            df = pd.read_csv(path)
+            all_frames.append(df)
+
+    if not all_frames:
+        print("[D] No scripted policy CSVs found for aggregation.")
+        return summary_path
+
+    full = pd.concat(all_frames, ignore_index=True)
+
+    def pct_two_compounds(g):
+        return np.mean(g["used_compounds"].apply(lambda s: len(str(s).split(";")) >= 2))
+
+    def finish_rate(g):
+        return np.mean(~g["crashed"])
+
+    def mean_crash_lap(g):
+        vals = g["crash_lap"].dropna()
+        return float(vals.mean()) if len(vals) > 0 else np.nan
+
+    agg = full.groupby(["regime", "policy_name"]).agg(
+        mean_episode_return=("episode_return", "mean"),
+        std_episode_return=("episode_return", "std"),
+        mean_reward_time_total=("reward_time_total", "mean"),
+        mean_reward_lap_completion_total=("reward_lap_completion_total", "mean"),
+        mean_reward_risk_total=("reward_risk_total", "mean"),
+        mean_reward_crash_total=("reward_crash_total", "mean"),
+        mean_reward_pit_total=("reward_pit_total", "mean"),
+        mean_reward_compound_total=("reward_compound_total", "mean"),
+        mean_reward_compliance_total=("reward_compliance_total", "mean"),
+        finish_rate=("crashed", lambda x: np.mean(~x)),
+        mean_completed_laps=("completed_laps", "mean"),
+        mean_pitstops=("pitstops", "mean"),
+        pct_two_or_more_compounds=("used_compounds", pct_two_compounds),
+        mean_crash_lap=("crash_lap", mean_crash_lap),
+        mean_actual_risk=("mean_risk", "mean"),
+        conditional_mean_race_time=("race_time", "mean"),
+    ).reset_index()
+
+    agg.to_csv(summary_path, index=False)
+    print(f"[D] Scripted policy aggregate summary written to {summary_path}")
+
+    # Hypothesis checks
+    def check_rulebook(df: pd.DataFrame) -> None:
+        rule_df = df[df["regime"] == "rulebook"]
+        zs = rule_df[rule_df["policy_name"] == "aggressive_zero_stop"][
+            "mean_episode_return"
+        ].values
+        os = rule_df[rule_df["policy_name"] == "one_stop_compliant"][
+            "mean_episode_return"
+        ].values
+        if len(zs) and len(os):
+            cond = os[0] > zs[0]
+            status = "PASS" if cond else "FAIL"
+            print(
+                f"[D] RULEBOOK hypothesis (one_stop_compliant mean return > aggressive_zero_stop): {status}"
+            )
+        else:
+            print("[D] RULEBOOK hypothesis: insufficient data for check.")
+
+    def check_safe(df: pd.DataFrame) -> None:
+        safe_df = df[df["regime"] == "safe"]
+        zs = safe_df[safe_df["policy_name"] == "aggressive_zero_stop"][
+            "mean_episode_return"
+        ].values
+        cs = safe_df[safe_df["policy_name"] == "conservative_two_stop"][
+            "mean_episode_return"
+        ].values
+        if len(zs) and len(cs):
+            cond = cs[0] > zs[0]
+            status = "PASS" if cond else "FAIL"
+            print(
+                f"[D] SAFE hypothesis (conservative_two_stop mean return > aggressive_zero_stop): {status}"
+            )
+        else:
+            print("[D] SAFE hypothesis: insufficient data for check.")
+
+    def check_unconstrained(df: pd.DataFrame) -> None:
+        u_df = df[df["regime"] == "unconstrained"]
+        zs = u_df[u_df["policy_name"] == "aggressive_zero_stop"][
+            "mean_actual_risk"
+        ].values
+        cs = u_df[u_df["policy_name"] == "conservative_two_stop"][
+            "mean_actual_risk"
+        ].values
+        zt = u_df[u_df["policy_name"] == "aggressive_zero_stop"][
+            "conditional_mean_race_time"
+        ].values
+        ct = u_df[u_df["policy_name"] == "conservative_two_stop"][
+            "conditional_mean_race_time"
+        ].values
+        if len(zs) and len(cs) and len(zt) and len(ct):
+            cond_risk = zs[0] > cs[0]
+            cond_time = zt[0] < ct[0]
+            status_risk = "PASS" if cond_risk else "FAIL"
+            status_time = "PASS" if cond_time else "FAIL"
+            print(
+                f"[D] UNCONSTRAINED hypothesis (aggressive higher actual risk): {status_risk}"
+            )
+            print(
+                f"[D] UNCONSTRAINED hypothesis (aggressive faster conditional race time): {status_time}"
+            )
+        else:
+            print("[D] UNCONSTRAINED hypothesis: insufficient data for check.")
+
+    check_rulebook(agg)
+    check_safe(agg)
+    check_unconstrained(agg)
+
+    return summary_path
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic E: PPO action-distribution audit
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -378,7 +651,14 @@ class PPOActionRecord:
 
 
 def load_ppo_model(run_name: str, regime: RaceRegime, steps: int, seed: int) -> PPO:
-    model_dir = Path("outputs") / "experiments" / "models" / run_name / "ppo" / regime.name.lower()
+    model_dir = (
+        Path("outputs")
+        / "experiments"
+        / "models"
+        / run_name
+        / "ppo"
+        / regime.name.lower()
+    )
     model_path = model_dir / (
         f"ppo_regime={regime.name.lower()}_seed={seed}_steps={steps}.zip"
     )
@@ -386,7 +666,10 @@ def load_ppo_model(run_name: str, regime: RaceRegime, steps: int, seed: int) -> 
 
 
 def ppo_action_distribution_audit(regime: RaceRegime, steps: int, run_name: str) -> Path:
-    """Diagnostic D: audit PPO actions under deterministic and stochastic modes."""
+    """Diagnostic E: audit PPO actions under deterministic and stochastic modes.
+
+    Output filename: ppo_actions_<regime>.csv
+    """
     out_path = BASE_OUT / f"ppo_actions_{regime.name.lower()}.csv"
 
     seeds = [0]
@@ -435,8 +718,13 @@ def ppo_action_distribution_audit(regime: RaceRegime, steps: int, run_name: str)
 
     df = pd.DataFrame([asdict(r) for r in records])
     df.to_csv(out_path, index=False)
-    print(f"[D] PPO action audit written to {out_path}")
+    print(f"[E] PPO action audit written to {out_path}")
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Main entrypoint to run all diagnostics
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -445,8 +733,11 @@ def main() -> None:
     for regime in regimes:
         forced_action_transition_matrix(regime)
         controlled_hazard_sensitivity(regime)
+        valid_pit_boundary_test(regime)
         scripted_policy_reward_ordering(regime)
         ppo_action_distribution_audit(regime, steps=200000, run_name="default")
+
+    aggregate_scripted_policy_results()
 
 
 if __name__ == "__main__":
