@@ -1,0 +1,55 @@
+track:
+  name: silverstone_2024
+  laps_csv: data/silverstone_2024_laps.csv
+  segments_csv: data/silverstone_2024_track_segments.csv
+  total_race_laps: 52
+
+environment:
+  default_start_compound: MEDIUM
+  available_compounds: [SOFT, MEDIUM, HARD, INTER]
+  mandatory_pit_stop: true
+  mandatory_distinct_compounds: 2
+  pit_stop_time_loss: 20.0
+  tyre_age_threshold_for_stale_penalty: 20
+  enable_track_segments: true
+  enable_crash_logging: true
+
+reward_regimes:
+  unconstrained:
+    reward_time_weight: -0.01
+    reward_lap_completion: 0.1
+    reward_risk_weight: 0.02
+    reward_crash_penalty: -8.0
+    reward_pit_weight: 0.0
+    reward_compound_bonus: 0.0
+    reward_compliance_bonus: 0.0
+    reward_stale_tyre_penalty: 0.0
+
+  rulebook:
+    reward_time_weight: -0.01
+    reward_lap_completion: 0.1
+    reward_risk_weight: -0.01
+    reward_crash_penalty: -20.0
+    reward_pit_weight: 2.0
+    reward_compound_bonus: 3.0
+    reward_compliance_bonus: 8.0
+    reward_stale_tyre_penalty: -0.05
+    non_compliance_penalty: -10.0
+
+  safe:
+    reward_time_weight: -0.01
+    reward_lap_completion: 0.5
+    reward_risk_weight: -0.05
+    reward_crash_penalty: -300.0
+    reward_pit_weight: 1.0
+    reward_compound_bonus: 1.0
+    reward_compliance_bonus: 2.0
+    reward_stale_tyre_penalty: -0.1
+    clean_segment_bonus: 0.02
+
+training_defaults:
+  algorithm: PPO
+  total_timesteps: 50000
+  eval_episodes: 5
+  seed: 0
+  deterministic_eval: true
