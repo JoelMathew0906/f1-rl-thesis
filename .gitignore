@@ -26,3 +26,12 @@ requirements_old.txt
 
 # Debug experiment artifacts
 outputs/debug/
+
+# Bulky generated study artefacts under outputs/ (curated manifests,
+# summaries, STUDY_README files and reproducibility scripts stay tracked)
+outputs/**/models/
+outputs/**/logs/
+outputs/**/trainlogs/
+outputs/**/eval/
+outputs/**/diagnostics/
+outputs/**/DONE
