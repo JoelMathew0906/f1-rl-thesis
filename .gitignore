@@ -10,7 +10,12 @@ __pycache__/
 
 # Runtime caches / local artifacts
 data/cache/
+data/fastf1_cache/
 *.sqlite
+
+# OS junk
+.DS_Store
+**/.DS_Store
 
 # Temporary search outputs
 grep_hits.txt

@@ -12,7 +12,7 @@ The current design crosses:
 
 - **Five architectures:** PPO, A2C, DQN, SARSA, and REINFORCE.
 - **Three regimes:** unconstrained performance, rulebook-aware, and safety-constrained.
-- **Common environment:** a strategic single-car Silverstone race simulator calibrated on 2025 lap data (`data/silverstone_2025_laps.csv`).
+- **Common environment:** a strategic single-car Silverstone race simulator calibrated on 2025 lap data (`data/silverstone_2024_laps.csv`).
 
 All generated CSVs, HTML comparison pages, and SHAP images currently live alongside the code in `data/`, `output/`, and the notebooks. As the thesis evolves, these may be reorganised into a dedicated `results/` hierarchy, but this repository intentionally keeps the exploratory artefacts visible to support rapid iteration.
 
@@ -20,11 +20,10 @@ All generated CSVs, HTML comparison pages, and SHAP images currently live alongs
 
 ```text
 f1-rl-thesis/
-├── .gitkeep                       Placeholder (safe to ignore)
 ├── configs/
 │   └── configs_silverstone.yaml   Silverstone configuration stub
 ├── data/
-│   └── silverstone_2025_laps.csv  FastF1-derived calibration data for Silverstone
+│   └── silverstone_2024_laps.csv  FastF1-derived calibration data for Silverstone
 ├── notebooks/
 │   ├── 01_environment_and_data.ipynb       Environment + calibration exploration
 │   ├── 02_training_and_logs.ipynb          Training runs and logging
@@ -119,6 +118,13 @@ The core limitations of the underlying project still apply here:
 - SHAP explanations are based on supervised surrogates, not the raw RL algorithms.
 
 The role of this repository is to keep the architecture comparison, evaluation, and SHAP analysis reproducible and thesis-ready.
+
+## Baseline Snapshot Limitations
+
+- The baseline contains pre-recalibration Silverstone parameters and calibration artefacts.
+- Reward shaping has been iteratively adjusted in `f1_env.py`; current reward-regime documentation/configuration may not perfectly correspond to the active shaping implementation, so the regimes require controlled validation.
+- Existing tracked PPO model sets represent only single-seed or unspecified-seed runs; they do not support statistical or generalisable performance claims.
+- Historical artefact labels such as V1/V2/V3 are retained as existing output names and should not be interpreted as formal experiment versions.
 
 ## Origin
 
