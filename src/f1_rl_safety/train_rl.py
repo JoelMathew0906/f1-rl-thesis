@@ -55,6 +55,7 @@ def train_sb3_algo(
     model_dir: Path,
     run_name: str,
     resume: bool = False,
+    gamma: float = 0.99,
 ) -> Path:
     """Train a PPO/A2C/DQN agent on the F1RaceEnv.
 
@@ -86,7 +87,8 @@ def train_sb3_algo(
             # Explicit resume: load existing checkpoint and continue training
             model = PPO.load(str(model_path), env=env)
         else:
-            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed)
+            # gamma is configurable for PPO only (default matches SB3's 0.99)
+            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed, gamma=gamma)
     elif algo == "a2c":
         model = A2C("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed)
     elif algo == "dqn":
@@ -264,6 +266,17 @@ def main():
         ),
     )
     parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.99,
+        help=(
+            "PPO discount factor (default 0.99, matching SB3's default and "
+            "all pre-existing runs). Must satisfy 0 < gamma <= 1. Ignored "
+            "for non-PPO algorithms and for --resume loads, which keep the "
+            "checkpoint's own gamma."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -282,6 +295,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if not (0.0 < args.gamma <= 1.0):
+        parser.error(f"--gamma must be in (0, 1], got {args.gamma}")
 
     algo = args.algo.lower()
     regime = REGIMES[args.regime]
@@ -318,6 +334,7 @@ def main():
             model_dir,
             run_name,
             resume=args.resume,
+            gamma=args.gamma,
         )
 
         # Optional PPO-only smoke-test evaluation into outputs/.../eval
