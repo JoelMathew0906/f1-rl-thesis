@@ -2,6 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
+import yaml
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -13,6 +14,102 @@ class RaceRegime(Enum):
     UNCONSTRAINED = auto()
     RULEBOOK = auto()
     SAFE = auto()
+
+
+# Single source of truth for reward coefficients: the reward_regimes block
+# of configs/configs_silverstone.yaml. Term semantics live in
+# F1RaceEnv._compute_reward; only coefficients live in the YAML.
+_REWARD_CONFIG_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "configs_silverstone.yaml"
+)
+
+REQUIRED_REWARD_KEYS = (
+    "w_pace",
+    "w_alive",
+    "w_lap",
+    "w_finish",
+    "w_position_delta",
+    "crash_penalty",
+    "catastrophic_penalty",
+    "w_risk_step",
+    "risk_free_threshold",
+    "w_wear_step",
+    "wear_threshold",
+    "pit_milestone_bonus",
+    "compound_milestone_bonus",
+    "finish_compliant_bonus",
+    "finish_noncompliant_penalty",
+    "over_pit_cap",
+    "over_pit_penalty",
+    "no_pit_step_penalty",
+    "no_pit_grace_laps",
+)
+
+_reward_weights_cache: Optional[Dict[str, Dict[str, float]]] = None
+
+
+def load_reward_weights(
+    config_path: Path = _REWARD_CONFIG_PATH,
+) -> Dict[str, Dict[str, float]]:
+    """Load and strictly validate per-regime reward coefficients.
+
+    Fails fast (naming the offending regime and key) on a missing config
+    file, missing regime block, missing/unknown/non-numeric keys. There
+    are deliberately no fallback defaults: the YAML is the only source
+    of truth for reward coefficients.
+    """
+    global _reward_weights_cache
+    if _reward_weights_cache is not None and config_path == _REWARD_CONFIG_PATH:
+        return _reward_weights_cache
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Reward config not found: {config_path}")
+
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    regimes_cfg = cfg.get("reward_regimes") if isinstance(cfg, dict) else None
+    if not isinstance(regimes_cfg, dict):
+        raise ValueError(
+            f"'reward_regimes' block missing or malformed in {config_path}"
+        )
+
+    weights: Dict[str, Dict[str, float]] = {}
+    for regime in RaceRegime:
+        name = regime.name.lower()
+        block = regimes_cfg.get(name)
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"reward_regimes is missing regime '{name}' in {config_path}"
+            )
+
+        missing = [k for k in REQUIRED_REWARD_KEYS if k not in block]
+        if missing:
+            raise ValueError(
+                f"reward_regimes['{name}'] is missing required keys "
+                f"{missing} in {config_path}"
+            )
+        unknown = [k for k in block if k not in REQUIRED_REWARD_KEYS]
+        if unknown:
+            raise ValueError(
+                f"reward_regimes['{name}'] has unknown keys {unknown} "
+                f"in {config_path}"
+            )
+
+        parsed: Dict[str, float] = {}
+        for key in REQUIRED_REWARD_KEYS:
+            value = block[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"reward_regimes['{name}']['{key}'] must be numeric, "
+                    f"got {value!r} in {config_path}"
+                )
+            parsed[key] = float(value)
+        weights[name] = parsed
+
+    if config_path == _REWARD_CONFIG_PATH:
+        _reward_weights_cache = weights
+    return weights
 
 
 class F1RaceEnv(gym.Env):
@@ -44,6 +141,9 @@ class F1RaceEnv(gym.Env):
         self.track_segments = load_or_build_silverstone_segments(year=2024)
         self.n_segments = len(self.track_segments)
         self.calibration = self._load_calibration_2024()
+
+        # reward coefficients for this regime (validated YAML, fail-fast)
+        self.reward_weights = load_reward_weights()[self.regime.name.lower()]
 
         obs_dim = 1 + 1 + 1 + 2 + 1 + 1 + 1 + 3 + 5 + 2
         self.observation_space = spaces.Box(
@@ -168,6 +268,11 @@ class F1RaceEnv(gym.Env):
 
         # track which compounds have been used for rulebook compliance
         self.used_compounds: set[int] = {self.tyre_compound}
+
+        # one-time milestone / anti-farming state for reward terms
+        self._pit_milestone_paid = False
+        self._compound_milestone_paid = False
+        self._over_pits_charged = 0
 
         # logging of crash locations
         self.last_segment: Optional[TrackSegment] = None
@@ -460,131 +565,113 @@ class F1RaceEnv(gym.Env):
         return "stochastic_incident"
 
     def _compute_reward(self, seg_time, pos_delta, crash, risk_level, terminated):
-        """Compute reward and log per-component contributions.
+        """Compute reward from the per-regime coefficients in
+        configs/configs_silverstone.yaml (see load_reward_weights).
 
-        Reward ADJUSTMENT V3: add dense survival/lap shaping, milestone
-        rulebook incentives, and per-regime risk/crash differentiation
-        while keeping crash probability and dynamics unchanged.
+        One generic term schema is shared by all regimes; regimes differ
+        only in coefficients. Terms:
+          pace           w_pace * (base_seg_time - seg_time) per step —
+                         rewards speed/progress only; risk is never paid
+                         directly and helps solely through its effect on
+                         lap time versus crash probability
+          position       w_position_delta * (-pos_delta) on position change
+          alive          +w_alive per surviving step
+          lap            +w_lap per completed lap
+          finish         +w_finish for completing all laps without crash
+          crash          -crash_penalty (- catastrophic_penalty extra)
+          risk           -w_risk_step * max(0, risk - risk_free_threshold)
+          wear           -w_wear_step * max(0, tyre_wear - wear_threshold)
+          pit milestone  +pit_milestone_bonus once, on first effective pit
+          compound       +compound_milestone_bonus once, when >=2 dry
+                         compounds used in a dry race
+          over-pit       -over_pit_penalty per pit beyond over_pit_cap,
+                         charged at the offending pit (anti-farming)
+          no-pit drip    -no_pit_step_penalty per step once past
+                         no_pit_grace_laps without a pit; kept smaller
+                         than w_alive so survival stays net positive
+          compliance     settled at race *finish* only: crashed episodes
+                         settle no compliance, because the rule applies to
+                         classified finishers and settling at crash would
+                         reward crashing early to escape the penalty
         """
-        # base performance terms
-        time_term = -seg_time / 100.0
-        pos_term = (10 - self.position) / 10.0
+        w = self.reward_weights
 
-        # dense survival/progress shaping: small positive per step
-        progress_step = 0.02  # REWARD ADJUSTMENT V3 — dense step survival shaping
+        # Pace baseline includes the deterministic, policy-independent fuel
+        # penalty so the pace term is centred and does not tax mere survival.
+        base_seg = (
+            self._base_lap_time() + 2.5 * self.fuel_level
+        ) / max(self.n_segments, 1)
 
-        # lap completion detection: we are at start of a lap (segment_idx == 0)
-        # and did not crash on the last segment
+        # pace + position-change (accumulated as the "time" component)
+        reward_time = w["w_pace"] * (base_seg - seg_time)
+        reward_time += w["w_position_delta"] * (-pos_delta)
+
+        # survival shaping, lap and finish bonuses
+        reward_lap_completion = w["w_alive"]
         lap_completed = (self.current_segment_idx == 0 and not crash)
-        lap_completion_bonus = 0.0
         if lap_completed:
-            lap_completion_bonus = 0.5  # REWARD ADJUSTMENT V3 — per-lap completion bonus
+            reward_lap_completion += w["w_lap"]
+        finished = (
+            terminated and self.current_lap >= self.n_laps and not self.crashed
+        )
+        if finished:
+            reward_lap_completion += w["w_finish"]
 
-        # episode completion bonus when finishing the race without crash
-        episode_completion_bonus = 0.0
-        if terminated and self.current_lap >= self.n_laps and not self.crashed:
-            if self.regime == RaceRegime.UNCONSTRAINED:
-                episode_completion_bonus = 0.8 * self.n_laps
-            elif self.regime == RaceRegime.RULEBOOK:
-                episode_completion_bonus = 0.7 * self.n_laps
-            elif self.regime == RaceRegime.SAFE:
-                episode_completion_bonus = 1.0 * self.n_laps
+        # one-sided risk and thresholded wear penalties
+        reward_risk = -w["w_risk_step"] * max(
+            0.0, risk_level - w["risk_free_threshold"]
+        )
+        reward_compound = -w["w_wear_step"] * max(
+            0.0, float(self.tyre_wear) - w["wear_threshold"]
+        )
 
-        reward_time = time_term + pos_term
-        reward_lap_completion = progress_step + lap_completion_bonus + episode_completion_bonus
-
-        reward_risk = 0.0
         reward_crash = 0.0
+        if crash:
+            reward_crash -= w["crash_penalty"]
+            if self.catastrophic_event:
+                reward_crash -= w["catastrophic_penalty"]
+
+        # one-time pit milestone: repeated pits earn nothing extra
         reward_pit = 0.0
-        reward_compound = 0.0
+        if not self._pit_milestone_paid and self.pit_count >= 1:
+            reward_pit += w["pit_milestone_bonus"]
+            self._pit_milestone_paid = True
+
+        # over-pitting charged per excess pit at the pit itself
+        over_pits = (
+            max(0, self.pit_count - int(w["over_pit_cap"])) - self._over_pits_charged
+        )
+        if over_pits > 0:
+            reward_pit -= w["over_pit_penalty"] * over_pits
+            self._over_pits_charged += over_pits
+
+        if self.pit_count == 0 and self.current_lap >= int(w["no_pit_grace_laps"]):
+            reward_pit -= w["no_pit_step_penalty"]
+
+        # compound diversity milestone (dry-compound rule; wet usage exempts)
+        dry_indices = {
+            self.compound_to_idx["SOFT"],
+            self.compound_to_idx["MEDIUM"],
+            self.compound_to_idx["HARD"],
+        }
+        used_dry = {c for c in self.used_compounds if c in dry_indices}
+        used_wet = any(c not in dry_indices for c in self.used_compounds)
+        if (
+            not self._compound_milestone_paid
+            and not used_wet
+            and len(used_dry) >= 2
+        ):
+            reward_compound += w["compound_milestone_bonus"]
+            self._compound_milestone_paid = True
+
+        # terminal compliance settlement — finished races only
         reward_compliance = 0.0
-
-        if self.regime == RaceRegime.UNCONSTRAINED:
-            # performance-oriented: explicit reward for positive risk
-            reward_risk += 1.5 * max(0.0, risk_level) / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — strengthened risk bonus in unconstrained regime
-            # crashes are penalised but less severely than other regimes
-            if crash:
-                reward_crash -= 8.0
-            if self.catastrophic_event:
-                reward_crash -= 25.0
-
-        elif self.regime == RaceRegime.RULEBOOK:
-            # stronger crash penalties and modest discouragement of excess risk
-            if crash:
-                reward_crash -= 20.0
-            if self.catastrophic_event:
-                reward_crash -= 60.0
-
-            reward_risk -= 1.0 * max(0.0, risk_level - 0.4) / max(self.n_segments, 1)
-
-            # soft shaping penalty if we are deep into the race without a pitstop
-            if self.current_lap > int(0.3 * self.n_laps) and self.pit_count < 1:
-                reward_pit -= 0.05 / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — early penalty for no pit in RULEBOOK regime
-
-            # per-step penalty for excessive stint length on one compound
-            if self.tyre_age > 20 and self.pit_count < 1:
-                reward_compound -= 0.1 / max(self.n_segments, 1)  # REWARD ADJUSTMENT V3 — long-stint penalty in RULEBOOK regime
-
-            # dense incentives for pit stop and compound diversity once achieved
-            dry_indices = {
-                self.compound_to_idx["SOFT"],
-                self.compound_to_idx["MEDIUM"],
-                self.compound_to_idx["HARD"],
-            }
-            used_dry = {c for c in self.used_compounds if c in dry_indices}
-            wet_indices = {
-                self.compound_to_idx["INTERMEDIATE"],
-                self.compound_to_idx["WET"],
-            }
-            used_wet = any(c in wet_indices for c in self.used_compounds)
-
-            if self.pit_count >= 1 and int(0.3 * self.n_laps) <= self.current_lap <= int(0.8 * self.n_laps):
-                reward_pit += 0.03  # REWARD ADJUSTMENT V3 — dense pit-window reward in RULEBOOK regime
-
-            if not used_wet and len(used_dry) >= 2:
-                reward_compound += 0.02  # REWARD ADJUSTMENT V3 — dense compound-diversity reward in RULEBOOK regime
-
-            if terminated:
-                # terminal rule: at least one pitstop required in dry conditions
-                if self.current_lap >= self.n_laps and self.pit_count < 1:
-                    reward_compliance -= 300.0
-
-                # simple dry-compound usage rule (wet race exception)
-                if self.current_lap >= self.n_laps and not used_wet and len(used_dry) < 2:
-                    reward_compliance -= 80.0
-
-                if self.pit_count > 3:
-                    reward_pit -= 20.0 * (self.pit_count - 3)
-
-                # bonus for satisfying mandatory pit stop
-                if self.current_lap >= self.n_laps and self.pit_count >= 1:
-                    reward_pit += 5.0
-
-                # bonus for using at least two dry compounds
-                if self.current_lap >= self.n_laps and not used_wet and len(used_dry) >= 2:
-                    reward_compound += 2.0
-
-        elif self.regime == RaceRegime.SAFE:
-            # strong aversion to risk and high wear
-            reward_risk -= 3.0 * max(0.0, risk_level) / max(self.n_segments, 1)
-            reward_risk -= 0.5 * max(0.0, abs(risk_level) - 0.3) / max(self.n_segments, 1)
-            reward_risk -= 0.01 * max(0.0, risk_level)  # REWARD ADJUSTMENT V3 — per-step risk discouragement in SAFE regime
-
-            if crash:
-                reward_crash -= 300.0  # REWARD ADJUSTMENT V3 — strong crash penalty in SAFE regime
-            if self.catastrophic_event:
-                reward_crash -= 1000.0  # REWARD ADJUSTMENT V3 — strong catastrophic penalty in SAFE regime
-
-            if self.pit_count > 3:
-                reward_pit -= 15.0 * (self.pit_count - 3)
-
-            # high-wear penalty
-            reward_compound -= 3.0 * max(0.0, self.tyre_wear - 0.65) / max(
-                self.n_segments, 1
-            )
-
-            if terminated and self.current_lap >= self.n_laps and self.pit_count < 1:
-                reward_compliance -= 40.0
+        if finished:
+            compliant = self.pit_count >= 1 and (used_wet or len(used_dry) >= 2)
+            if compliant:
+                reward_compliance += w["finish_compliant_bonus"]
+            else:
+                reward_compliance -= w["finish_noncompliant_penalty"]
 
         # final reward and accumulation of components
         reward = (

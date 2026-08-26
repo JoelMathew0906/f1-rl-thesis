@@ -1,0 +1,7 @@
+regime,check,lhs,rhs,passed
+rulebook,compliant_one_stop > aggressive_zero_stop,-4.429852555306807,-21.50059664197401,True
+rulebook,compliant_one_stop > fast_zero_stop,-4.429852555306807,-18.148071338416976,True
+safe,conservative_one_stop > aggressive_zero_stop,-33.675724229515694,-47.320931489430215,True
+unconstrained,compliant_one_stop > conservative_one_stop,-0.5715113882670319,-4.982880765052321,True
+unconstrained,fast_zero_stop > aggressive_zero_stop,-7.586353346042449,-8.880771578435994,True
+unconstrained,aggressive_zero_stop is not top-ranked,,,True
