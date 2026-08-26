@@ -16,6 +16,15 @@ class RaceRegime(Enum):
     SAFE = auto()
 
 
+# Uniform calibration factor on the segment hazard model. The unscaled
+# model implied ~0.27 crash probability per lap even for a cautious
+# driver (P(finish 52 laps) ~ 1e-7); this scale makes a cautious low-risk
+# 52-lap finish realistically achievable while preserving every
+# qualitative hazard ratio (corner vs straight, risk envelope, wear,
+# stale tyres). See outputs/phase2-recalibration/reward_validation/.
+CRASH_HAZARD_SCALE = 0.04
+
+
 # Single source of truth for reward coefficients: the reward_regimes block
 # of configs/configs_silverstone.yaml. Term semantics live in
 # F1RaceEnv._compute_reward; only coefficients live in the YAML.
@@ -345,7 +354,7 @@ class F1RaceEnv(gym.Env):
             completed_lap = True
 
         lap_time, pos_delta, crash, sc_triggered = self._simulate_segment(
-            segment, pit_decision, tyre_choice, risk_level
+            segment, pit_decision, tyre_choice, risk_level, completed_lap
         )
 
         self.race_time += lap_time
@@ -430,6 +439,7 @@ class F1RaceEnv(gym.Env):
         pit_decision: int,
         tyre_choice: int,
         risk_level: float,
+        completed_lap: bool,
     ):
         base_lap = self._base_lap_time()
         base = base_lap / max(self.n_segments, 1)
@@ -445,10 +455,10 @@ class F1RaceEnv(gym.Env):
         overcaution_pen = 0.8 * max(0.0, -risk_level) / max(self.n_segments, 1)
 
         pit_loss = 0.0
-        # approximate pit loss on pit entry straight at lap completion
-        seg_type = str(segment.segment_type).lower()
-        if pit_decision and seg_type == "straight":
-            pit_loss = self.calibration["pit_loss"] / max(self.n_segments, 1)
+        # full pit-lane time loss, charged on the same step where the pit
+        # takes effect (lap completion) — matching the tyre-state change
+        if pit_decision and completed_lap:
+            pit_loss = self.calibration["pit_loss"]
 
         noise = self.rng.normal(0, 0.2)
 
@@ -515,7 +525,9 @@ class F1RaceEnv(gym.Env):
             else 0.0
         )
 
-        base_prob = base + radius_term + wear_term + exceed_term + old_tyre_term
+        base_prob = CRASH_HAZARD_SCALE * (
+            base + radius_term + wear_term + exceed_term + old_tyre_term
+        )
         return float(np.clip(base_prob, 0.0, 0.35))
 
     def _tyre_wear_increment(self, risk_level):

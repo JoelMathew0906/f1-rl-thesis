@@ -8,9 +8,11 @@ regime hypotheses:
   H2 RULEBOOK:      compliant_one_stop > both zero-stop policies
   H1 SAFE:          conservative_one_stop > aggressive_zero_stop
   H3 UNCONSTRAINED: compliant_one_stop > conservative_one_stop (pit-matched
-                    pace contrast, controlling for the known free-pit
-                    environment defect), fast_zero_stop > aggressive_zero_stop
-                    (no-early-crash pathology check), and
+                    pace contrast), compliant_one_stop > aggressive_zero_stop
+                    (no-early-crash: pit-managed pace-viable survival beats
+                    envelope-exceeding early crashing; a zero-stop policy is
+                    not a valid survival comparator under recalibrated tyre
+                    degradation), compliant_one_stop > over_pitting, and
                     aggressive_zero_stop is not the top-ranked policy
 
 Outputs (per-episode CSV, summary CSV, checks CSV) are written under
@@ -154,13 +156,24 @@ def build_checks(summary: pd.DataFrame) -> pd.DataFrame:
             "rhs": mean_return("unconstrained", "conservative_one_stop"),
         },
         {
-            # no-early-crash pathology check within the zero-stop pair:
-            # surviving longer at sane risk must not score worse than
-            # crashing early at excessive risk
+            # No-early-crash check. Under recalibrated tyre degradation and
+            # correctly priced pit loss, the no-early-crash condition is
+            # tested using a pit-managed, pace-viable policy versus an
+            # envelope-exceeding early-crash policy. A zero-stop policy is
+            # no longer a valid survival comparator because its long-stint
+            # tyre degradation is itself strategically pathological.
             "regime": "unconstrained",
-            "check": "fast_zero_stop > aggressive_zero_stop",
-            "lhs": mean_return("unconstrained", "fast_zero_stop"),
+            "check": "compliant_one_stop > aggressive_zero_stop",
+            "lhs": mean_return("unconstrained", "compliant_one_stop"),
             "rhs": mean_return("unconstrained", "aggressive_zero_stop"),
+        },
+        {
+            # over-pitting must remain strongly disfavoured now that every
+            # effective pit pays the full pit-lane time loss
+            "regime": "unconstrained",
+            "check": "compliant_one_stop > over_pitting",
+            "lhs": mean_return("unconstrained", "compliant_one_stop"),
+            "rhs": mean_return("unconstrained", "over_pitting"),
         },
     ]
     for c in checks:
