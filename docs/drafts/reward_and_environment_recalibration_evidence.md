@@ -296,6 +296,106 @@ consequence, and mean values alone are therefore an inadequate summary of this b
 
 ---
 
+# Pace–survival trade-off and final regime interpretation
+
+Throughout this section `PD/` abbreviates
+`outputs/phase2-recalibration/pace_diagnostics/20260827T124054/`.
+
+A dedicated pace-diagnostics study separated local pace from race-level outcome,
+replaying the unchanged environment and the nine committed gamma=0.999
+checkpoints. It is measurement only: no reward coefficient, hazard parameter,
+tyre calibration, pit mechanic, action or observation space, wrapper, training
+configuration or evaluator semantic was altered (source:
+`scripts/analyse_pace_profiles.py`; protocol and verification in `PD/README.md`).
+
+**Local pace is operationalised as compound- and tyre-age-controlled
+complete-lap time**, not as any reward quantity. The environment emits a segment
+time (`info["lap_time"]`, seconds, one per `step()`, 36 segments per lap); a lap
+record sums the 36 segment times of one lap index and is admitted only when all
+36 were observed, so the truncated final lap of a crashed episode is excluded
+from pace statistics. The pre-registered window is laps 5-15 of episodes without
+a pit stop; because such episodes never leave their starting compound the window
+is automatically compound-matched, and it proved closely matched on tyre age:
+mean entry tyre age 8.59, 8.63 and 8.81 laps with a MEDIUM share of 1.00 for
+unconstrained, rulebook and safe respectively [SOURCE:
+PD/matched_window_summary.csv, view=matched_window_laps5_15_zeropit].
+
+**Learned UNCONSTRAINED was the quickest regime locally, followed by RULEBOOK and
+then SAFE.** Within the pre-registered window the means were 95.175 s per lap
+(95% bootstrap CI [95.118, 95.234], n = 2249 laps), 95.924 s ([95.833, 96.008],
+n = 922) and 97.013 s ([96.957, 97.071], n = 2213); all three pairwise intervals
+are disjoint, giving -0.749 s per lap for unconstrained against rulebook and
+-1.838 s against safe, with mean demanded risk of +0.736, +0.315 and -0.558
+[SOURCE: PD/matched_window_summary.csv, view=matched_window_laps5_15_zeropit].
+The ordering survives an independent control: restricted to the MEDIUM starting
+compound and matched on tyre age, unconstrained was quicker than rulebook at 26
+of 26 tyre ages having at least 20 observations in both regimes, with disjoint
+intervals at all 26 and a mean difference of -0.924 s per lap [SOURCE:
+PD/matched_window_summary.csv, view=by_tyre_age_medium_only]. A fixed-policy
+counterfactual establishes the mechanism independently of learning: zero-pit
+policies at constant demanded risk of -0.50, 0.00, +0.30, +0.68 and +0.80
+recorded 96.900, 96.455, 95.950, 95.238 and 95.023 s per lap, a gradient of
+about -1.48 s per lap per unit of demanded risk, while over the same conditions
+the crash rate rose from 0.910 to 0.975, mean completed laps fell from 26.62 to
+17.15 and the finish rate fell from 0.090 to 0.025 [SOURCE:
+PD/matched_window_summary.csv, group_kind=fixed_policy].
+
+**Conditional completed-race time is observed only among episodes that complete
+the race and must not be used alone.** It is strongly survivorship-selected:
+among the fixed-policy conditions the highest-risk policy recorded the shortest
+conditional finish time while finishing only 2.5 per cent of episodes [SOURCE:
+PD/matched_window_summary.csv, views=race_outcome_conditional_finishers and
+attrition]. Conditional finish time, local per-lap pace, all-episode progress
+and attrition are accordingly reported as four distinct quantities.
+
+**RULEBOOK's race-level advantage reflects tyre and pit strategy rather than
+pace.** Its finishers making at least one stop completed in 4875.85 s (n = 15)
+against 5442.15 s for those making none (n = 7) [SOURCE:
+PD/matched_window_summary.csv, view=race_outcome_conditional_finishers]. A
+measured degradation gradient of about +0.21 s per lap per lap of tyre age, set
+against the -1.48 s per unit risk pace gradient, implies that roughly six laps of
+tyre age cancel the entire pace benefit of maximal demanded risk [SOURCE:
+PD/matched_window_summary.csv, views=by_tyre_age_medium_only and
+matched_window_laps5_15_zeropit]. When quoting RULEBOOK race times, note that
+episodes finishing without a pit stop receive a +300 s classification penalty
+added to `race_time` and not to any segment time: across RULEBOOK finishers mean
+`race_time` (5056.04 s) exceeds the mean sum of segment times (4960.58 s) by
+95.45 s, exactly 300 x 7/22 [SOURCE: PD/matched_window_summary.csv,
+view=race_outcome_conditional_finishers]. Its on-track advantage is therefore
+marginally larger than its `race_time` figures suggest, not an artefact of them.
+
+**SAFE was the lowest-risk regime and the strongest on survival**, with mean
+demanded risk -0.558 in the matched window, the highest finish rate (0.170) and
+the greatest mean completed laps (28.18), against 0.030 and 19.38 for
+unconstrained [SOURCE: PD/matched_window_summary.csv,
+views=matched_window_laps5_15_zeropit, attrition and all_episode_progress]. Its
+local pace is correspondingly the slowest of the three, consistent with its
+configuration.
+
+**Reward and environment semantics are frozen before the architecture-comparison
+phase.** Each regime's learned behaviour is the behaviour its coefficients
+specify - pace-seeking and attrition-prone, strategy-acquiring, or
+survival-oriented. These diagnostics provide no evidence of an internal
+inconsistency between the intended regime objectives and the observed PPO
+behaviour under the current environment, and no coefficient, hazard scale, tyre
+calibration or pit mechanic was adjusted.
+
+**SOFT tyre durability is a recorded simulator limitation, not an adjustment made
+in this phase.** In the calibrated compound parameters SOFT is both quicker
+(offset -1.270 s per lap) and substantially more durable (0.044 s per lap per lap
+of tyre age) than MEDIUM (+0.264 s; 0.202 s per lap per lap of age) [SOURCE:
+src/f1_rl_safety/f1_env.py, `_load_calibration_2024`, derived from
+data/silverstone_2024_laps.csv]. This is implausible relative to real tyre
+behaviour and follows from fitting a degradation slope across stints of unequal
+length. It carries an analytical consequence: an uncontrolled comparison of pace
+at matched tyre age credited rulebook with a spurious advantage, because a
+substantial share of its higher-age laps run on SOFT whereas unconstrained and
+safe laps are entirely MEDIUM, and controlling for compound removes that
+reversal. The limitation is documented and the compound-controlled view relied
+upon; no calibration change was made.
+
+---
+
 # Decision and transition
 
 The reward specification and environment dynamics were frozen at the conclusion of this
