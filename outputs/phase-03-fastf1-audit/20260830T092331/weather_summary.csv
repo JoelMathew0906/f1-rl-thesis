@@ -1,0 +1,6 @@
+session_code,n_samples,rainfall_value_counts,any_rainfall_true,air_temp_min,air_temp_max,track_temp_min,track_temp_max,humidity_min,humidity_max
+FP1,81,{False: 81},False,15.6,17.2,21.2,28.1,72.0,81.0
+FP2,81,"{False: 67, True: 14}",True,17.5,18.9,25.0,32.7,61.0,74.0
+FP3,82,"{True: 54, False: 28}",True,10.7,11.6,15.7,17.7,87.0,92.0
+Q,85,"{False: 79, True: 6}",True,12.4,14.6,18.3,24.0,65.0,85.0
+R,147,"{False: 96, True: 51}",True,14.5,16.8,20.7,37.9,59.0,78.0
