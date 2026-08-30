@@ -1,0 +1,8 @@
+step,rule,rows,dropped
+0_csv_rows,data/silverstone_2024_laps.csv as delivered,850,0
+1_isaccurate,IsAccurate == True (already applied upstream),850,0
+2_nulls,"drop null LapTime/Compound/TyreLife, non-finite seconds",850,0
+3_deleted,drop Deleted == True (not caught by IsAccurate),841,9
+4_trackstatus,"drop TrackStatus != ""1"" (assert, do not assume)",841,0
+5_post_sc_restart,drop first surviving lap after any gap left by a non-green lap,790,51
+6_min_cluster,"drop (Driver, Stint) clusters with < 3 surviving laps",787,3

@@ -1,0 +1,12 @@
+group,criterion,required,observed,pass
+offset,n_laps >= 30,30,158,True
+offset,n_clusters >= 6,6,22,True
+offset,n_drivers >= 3,3,19,True
+offset,CI halfwidth <= 2.0 s,<= 2.0,0.7195,True
+slope,n_laps >= 40,40,158,True
+slope,n_clusters >= 6,6,22,True
+slope,clusters with >= 5 laps >= 3,3,19,True
+slope,TyreLife span >= 8,8,9.0,True
+slope,within-stint CI excludes 0,True,False,False
+slope,pooled and within-stint slopes agree in sign,True,pooled -0.227861 / within -0.116270,True
+slope,raw (unclipped) slope not negative and not ~0,> 0 and CI excludes 0,raw -0.071881,False

@@ -240,16 +240,107 @@ Stop and ask before proceeding if any of the following arise.
 
 ## Completion record
 
-_To be filled in by the session that completes this phase. Do not delete the template
-headings; replace the placeholders._
-
-- **Date completed:**
-- **Completed tasks:**
+- **Date completed:** 2026-08-30
+- **Completed tasks:** Phase 03 gate check and constraint enumeration; full
+  precondition inspection (branch/HEAD/tree, `_load_calibration_2024` read in full,
+  wet-exemption predicate and compound-identity blast radius, calibration CSV
+  contents, cache/network status, `.gitignore` trackability); runtime calibration
+  probe recording actual values for all five compounds; pre-registered measurement
+  protocol (P0–P11) written and user-approved **before** any estimate was computed;
+  read-only measurement implementing the protocol; P8 clip test; per-lap weather
+  classification; robustness checks R1–R7 including the R7 falsification test;
+  P9 threshold gate; evidence artefact; separation statement.
 - **Files changed (with paths):**
+  - `docs/phase-04-wet-session-evidence.md` (new — the evidence artefact)
+  - `scripts/measure_wet_calibration.py` (new — read-only measurement script)
+  - `docs/phase-04-plan.md` (this completion record)
+  - `.claude/projects/-Users-joel-mathew-Documents-GitHub-f1-rl-thesis/memory/project-context.md`
+    (new dated Phase 04 section)
+  - `outputs/phase-04-wet-calibration/20260830T114500/` (curated, 36 KB, 9 files:
+    `manifest.csv`, `attrition.csv`, `weather_classification.csv`, `clip_test.csv`,
+    `estimates.csv`, `stint_summary.csv`, `robustness.csv`, `thresholds.csv`,
+    `README.md`) — trackable; no record-level CSV written, so no new `.gitignore`
+    pattern was required.
+  - **`docs/phase-04-proposed-calibration-diff.md` deliberately NOT created** — the
+    evidence did not clear the pre-registered thresholds.
 - **Checks run and results:** (exact commands and outcomes)
-- **Commit SHA:**
-- **Session selected, or no-suitable-session finding:**
-- **Outcome:** proposed calibration awaiting approval / documented no-calibration decision
-- **Estimates with uncertainty and sample counts:**
+  - `.venv_f1/bin/python -m compileall -q src scripts` — exit 0.
+  - `.venv_f1/bin/python scripts/measure_wet_calibration.py --smoke` — reduced-scope
+    smoke check (B=200), passed, output schema verified, smoke output deleted before
+    the full run.
+  - `.venv_f1/bin/python scripts/measure_wet_calibration.py --label 20260830T114500`
+    — full run, 5.4 s, B=10,000, seed 20260830, **0 KB `data/cache` growth**,
+    9/11 P9 criteria passed.
+  - Provenance: 0 unmatched rows and 0 `Compound`/`TyreLife`/`Stint` mismatches
+    between the CSV and the cached session; reproduced `base_lap_time` 92.4335 s and
+    every live `compound_offsets`/`deg_per_lap` value to six decimals.
+  - `git diff --check`, `git status --short` — run before requesting commit approval.
+- **Commit SHA:** _pending — not committed; user has not yet approved the diff._
+- **Session selected, or no-suitable-session finding:** 2024 British Grand Prix
+  **Race** session (the existing calibration source), treated as **time-varying**,
+  not as a single condition. A verifiable wet window exists within it: of 188
+  INTERMEDIATE laps, 173 classify `wet` and 15 `mixed` from the observed `Rainfall`
+  boolean, **zero** classify `dry`, and their median `TrackTemp` is 21.0 °C against
+  24.5–25.0 °C for every dry compound. Rainfall and compound choice agree completely
+  for the audited compound, so lap classification rests on an observation, not an
+  assumption — stop condition 7 did **not** fire. Per user scope decision, FP3/FP2/Q
+  laps were not added; no session other than the Race was loaded.
+- **Outcome:** **documented no-calibration decision.** No parameter change proposed.
+- **Estimates with uncertainty and sample counts:** In-scope INTERMEDIATE sample
+  158 laps / 22 `(Driver, Stint)` clusters / 19 drivers; `TyreLife` 3–12. All
+  intervals are cluster bootstraps over `(Driver, Stint)`, B=10,000, percentile 95%.
+  - **Pace offset — all 4 thresholds passed.** +10.858 s vs `B_current`
+    [10.316, 11.755]; +10.966 s vs `B_dry_green` [10.442, 11.790]; +10.613 s vs
+    `B_medium` [10.118, 11.412]. Live value +10.7135 lies **inside all three CIs**.
+    Location-estimator sensitivity small (median 10.858 / trimmed 11.086 / mean
+    10.745). **Corroborated; no change proposed** (0.145 s difference, a fifth of the
+    CI halfwidth).
+  - **Degradation slope — failed the two decisive thresholds.** Raw unclipped slope
+    over all 188 laps is **−0.071881 s/lap**; the live `0.010000` is purely the
+    `np.clip(slope, 0.01, 0.40)` floor at `f1_env.py:235`. Three estimators disagree
+    in sign: pooled −0.227861 [−0.366, −0.084]; within-stint −0.116270
+    [−0.210, **+0.000449**] (CI includes zero); condition-controlled **+0.541856**
+    [+0.123, +0.761]. **No-calibration decision**; value retained but relabelled an
+    unevidenced assumption.
+  - **Non-identifiability, the decisive diagnostic:** within-stint demeaned
+    Pearson r(`TyreLife`, `LapNumber`) = **1.0000**. Within a stint, tyre age and
+    lap number are the same variable up to a shift, so degradation cannot be
+    separated from track drying. All 22 stints fall inside laps 22–38 of a drying
+    race; 14 of 22 within-stint slopes are negative and 8 positive.
+  - **WET:** zero laps in the calibration source. No estimate attempted.
+    Offset 11.0 s / `deg_per_lap` 0.25 / `typical_stint` 10 remain fallback
+    constants, labelled unevidenced assumptions.
+  - **R7 falsification passed:** the same protocol yields a clean identifiable
+    answer for MEDIUM (447 laps, 23 stints, all three estimators within 0.05 s/lap),
+    and detects the documented SOFT artefact (within-stint 0.125 vs live 0.044105,
+    ~3×). The INTERMEDIATE failure is therefore a property of the data, not the
+    method.
 - **Unresolved issues:**
+  - `typical_stint[3] = 9` is biased low by roughly 2 laps because `IsAccurate`
+    removes in-laps and out-laps. It feeds `old_tyre_term` in `_segment_crash_prob`
+    (`f1_env.py:521-526`), so the hazard model likely penalises intermediate tyre age
+    ~2 laps too early. No change proposed — the protocol pre-registered no threshold
+    for this quantity.
+  - A **second** dry-compound anomaly, distinct from the documented SOFT one: HARD is
+    calibrated 2.5615 s *faster* than the dry baseline and faster than SOFT, from 39
+    laps across 3 stints, with a within-stint CI spanning zero. Dry parameters are a
+    plan non-goal, so this is reported only.
+  - Deleted laps (9 in this race) are **not** excluded by `IsAccurate` and are not
+    excluded by the live calibration path.
+  - `pit_loss = 21.5` s still never derived from `PitInTime`/`PitOutTime`.
+  - The `## Completion record` in `docs/phase-03-plan.md` still records
+    `Commit SHA: pending` and describes the Phase 03 curated outputs as uncommitted.
+    Both are stale — the commit is `2ddcee1` and all five files are tracked. Not
+    edited by this phase; flagged for the user.
 - **Next 3–5 concrete tasks:**
+  1. Obtain user approval of this diff and commit; do not push before approval.
+  2. Decide whether to correct the stale `Commit SHA` and outputs-tracking wording in
+     the `docs/phase-03-plan.md` completion record.
+  3. If a defensible intermediate degradation estimate is still wanted, propose
+     adding FP3 (54/82 rainfall-True, near-exclusively INTERMEDIATE, already cached)
+     as a **separate, approved** scope extension — noting it breaks the age/elapsed-time
+     collinearity only if stint age ranges actually overlap across sessions.
+  4. Consider a separately approved proposal to correct the `typical_stint`
+     out-lap-removal bias, since it reaches the hazard model.
+  5. Begin Phase 05 (`docs/phase-05-plan.md`), whose precondition is independently
+     establishing the physical unit of the `X`/`Y`/`Z` coordinate fields.
