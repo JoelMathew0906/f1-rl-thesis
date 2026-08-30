@@ -255,16 +255,150 @@ Stop and ask before proceeding if any of the following arise.
 
 ## Completion record
 
-_To be filled in by the session that completes this phase. Do not delete the template
-headings; replace the placeholders._
+- **Date completed:** 2026-08-30
 
-- **Date completed:**
-- **Completed tasks:**
+- **Completed tasks:** All eight preconditions. Precondition 1 verified (branch
+  `phase2-recalibration`, tree clean, HEAD `15269ea`, protected refs `main` =
+  `baseline/pre-recalibration` = `74c5f11`, annotated tag
+  `baseline-pre-recalibration` dereferencing to the same commit). Phase 03 geometry
+  gate read and **passed**. `src/f1_rl_safety/track.py` read in full; segment-consuming
+  paths of `src/f1_rl_safety/f1_env.py` read and recorded with line references;
+  grep enumeration of every segment-identity reference across `src/`, `scripts/`,
+  `notebooks/`, `configs/` and committed `outputs/`; segment CSV contents confirmed;
+  committed evaluation CSVs carrying segment identity identified; `.gitignore`
+  trackability confirmed. Implementation steps 1–9: gate check, consumer inventory,
+  source verification (including independently resolving the `X`/`Y`/`Z` coordinate
+  unit), additive schema design, assumption register, compatibility plan, additive
+  artefact generation, validation, and scope statement. Both approval gates were
+  honoured: the consumer inventory and the schema design were each presented and
+  approved before the artefact was generated.
+
 - **Files changed (with paths):**
-- **Checks run and results:** (exact commands and outcomes)
-- **Commit SHA:**
-- **Compatibility verdict:** preserved / migration plan approved / blocked
-- **Schema provenance summary:**
-- **Explicit non-representation statement recorded:** yes / no
+  - `docs/phase-05-geometry-schema.md` (new — the schema, provenance, sector-boundary
+    uncertainty, assumption register, non-representation statement, scope statement)
+  - `docs/phase-05-segment-consumer-inventory.md` (new — the compatibility surface)
+  - `scripts/build_geometry_schema.py` (new — read-only generation script; imports
+    nothing from `f1_env`, constructs no environment, reads the existing segments CSV
+    for comparison only)
+  - `outputs/phase-05-geometry/20260830T112139/` (new — 9 curated files, 52 KB:
+    `segment_geometry.csv`, `column_provenance.csv`, `sector_boundaries.csv`,
+    `sector_boundary_summary.csv`, `scale_fit_summary.csv`,
+    `corner_distance_check.csv`, `validation.csv`, `README.md`, `manifest.csv`).
+    Trackable — no `.gitignore` pattern matches, consistent with the Phase 03/04
+    precedent that curated phase output directories are committed
+  - `docs/phase-05-plan.md` (this completion record)
+  - `.claude/projects/-Users-joel-mathew-Documents-GitHub-f1-rl-thesis/memory/project-context.md`
+    (new dated Phase 05 section)
+  - **Not changed:** `data/silverstone_2024_track_segments.csv` is byte-unchanged
+    (sha256 `059983bafcef957fc0954fae89cbff167c1572bfd81e66e36104d4b029c4126e`). No
+    environment, reward, hazard, tyre-calibration, training, model or evaluator code
+    was modified. `docs/drafts/reward_and_environment_recalibration_evidence.md` was
+    not edited. No proposed code diff was drafted, so
+    `docs/phase-05-proposed-diff.md` was deliberately **not created** — no change to
+    existing code is warranted.
+
+- **Checks run and results:**
+  - `.venv_f1/bin/python -m compileall -q src scripts` — **exit 0**
+  - `.venv_f1/bin/python scripts/build_geometry_schema.py --label smoke_test --smoke`
+    — reduced-scope smoke check (3 reference laps), 11/11 checks PASS; smoke output
+    directory deleted before the full run
+  - `.venv_f1/bin/python scripts/build_geometry_schema.py --label 20260830T112139`
+    — full run, 19 reference laps, **12/12 validation checks PASS**. Headline check:
+    the 18 derived straight arc lengths sum to 5837.6948 m against a measured lap
+    length of 5837.6948 m, residual **0.000000 m**
+  - `.venv_f1/bin/python scripts/analyse_pace_profiles.py --episodes-fixed 3
+    --episodes-learned 2 --bootstrap 100 --label phase05_regression_check` — the
+    documented reduced-scope reproducibility check. 243 fixed laps, 361 learned laps,
+    550 summary rows, manifest `n_segments_per_lap = [36]`. **The 36-segment
+    assertion holds.** Temporary labelled directory
+    `outputs/phase2-recalibration/pace_diagnostics/phase05_regression_check/` removed
+    after the run
+  - `git diff --check` — clean; no tracked file modified
+  - `git status --short` — only intended new paths
+  - **Cache discipline:** `data/cache` **0 KB growth** (339,912 KB before and after);
+    `data/fastf1_cache` untouched (101,448 KB); `fastf1.Cache.offline_mode(True)` set
+    so a cache miss raises rather than fetching; **only the Race session was loaded**
+
+- **Commit SHA:** _pending — not committed; awaiting user approval of the final diff._
+
+- **Compatibility verdict:** **preserved.** No migration plan required. No consumer
+  of segment identity needs any change; no output schema, log schema or committed CSV
+  is affected. `n_segments` remains 36 and the alternating 18-straight/18-corner
+  structure is unchanged, so the frozen pace-diagnostics evidence at
+  `outputs/phase2-recalibration/pace_diagnostics/20260827T124054/` is unaffected —
+  re-verified by the reproducibility check above.
+
+- **Schema provenance summary:** 21 columns keyed on the existing `segment_id`:
+  **9 observed, 10 derived, 2 assumed** (per
+  `outputs/phase-05-geometry/20260830T112139/column_provenance.csv`). Single source
+  session, 2024 British Grand Prix Race, from the warm cache offline. The phase's
+  substantive new evidence is that **Phase 03's open coordinate-unit question is
+  resolved: FastF1 `X`/`Y`/`Z` are decimetres (1/10 m)**, fitted over 19 laps at
+  9.994137–10.053723 raw units per metre (mean 10.016642, 0.1664% from exactly 10.0);
+  and that **`corners.Distance` is in metres on the telemetry origin** (12/18 corners
+  agree exactly, max disagreement 5.04 m, below one 7.4 m sample interval). Distance
+  boundaries are therefore **observed**, not assumed. Sector boundaries are published
+  as **intervals** over 19 laps, because absolute boundaries shift materially
+  (end-of-S1 17.27 m, end-of-S2 33.43 m) while lap fractions are tighter but
+  **non-uniformly so** (S1 only 1.2x tighter, S2 2.8x, lap boundary 71.5x). The only
+  `assumed` columns are `region_name_external` (FastF1 supplies no `Name` column;
+  nullable, never a key) and `corner_angle_raw` (values observed, semantics
+  undocumented, consumed by nothing). `region_key` is the authoritative identifier and
+  is fully observed.
+
+- **Explicit non-representation statement recorded:** **yes** — in
+  `docs/phase-05-geometry-schema.md` (sections "Scope statement", "What this geometry
+  does NOT represent", "What this foundation supports, and what it does not license")
+  and in `outputs/phase-05-geometry/20260830T112139/README.md`. Both state that this
+  is a geometry-aware strategic simulator, not a validated digital twin, and enumerate
+  nine unrepresented properties: elevation, camber/banking, track width, kerb/run-off
+  geometry, surface state or grip model, racing-line model, corner entry/exit speeds,
+  fitted corner radii, and any vehicle-dynamics validation.
+
 - **Unresolved issues:**
+  1. **Two upstream defects in `track.py` are documented but not repaired.** Segment
+     1's `length` is `0.0` where its true extent is 615.93 m of arc — `track.py:87`
+     computes `total_len - s_coords[-1]`, identically zero for any circuit. And
+     `track.py:90-91` under-assigns sector 1 by applying the proportion rule to the
+     corner rather than the preceding straight. Both are **non-behavioural**: `length`
+     and `sector` are read by no code. Repairing them means regenerating
+     `data/silverstone_2024_track_segments.csv`, a plan stop condition, and requires a
+     separate approved proposal.
+  2. **`approx_radius` is numerically inert.** It contributes 0.015%–0.086% of the
+     corner base rate, so all 18 corners are effectively identical to the hazard
+     model, and the proxy is *larger* in fast open sections — inverting the intended
+     "tighter corner is riskier" semantics. No change proposed: rewiring it is a
+     dynamics change requiring separate approval and would invalidate frozen evidence.
+  3. **`corners.Angle` semantics remain unresolved.** Two values look like angle-wrap
+     artefacts (T18 = −178.57, T10 = −159.33, both real corners). Carried, consumed by
+     nothing.
+  4. **Sector boundaries derive from Race laps only.** The S1 boundary carries real
+     uncertainty (~0.25% of a lap) even in fractional form. Sector assignment is
+     nevertheless verified robust at a 9.7x margin.
+  5. **Arc and chord measure different reference paths** — `corners.Distance` follows
+     the racing line, `X`/`Y` chords the centreline map. 4 of 18 chords exceed their
+     own arc (segments 3, 21, 23, 33). The two must never be mixed in one calculation.
+  6. **The Phase 03 `## Completion record` carries two stale statements** — "Commit
+     SHA: pending" and the claim that
+     `outputs/phase-03-fastf1-audit/20260830T092331/` is gitignored/local-only. Both
+     are false: that work is committed at `2ddcee1` and all five files are tracked.
+     Flagged in Phase 03's and Phase 04's records; still uncorrected in
+     `docs/phase-03-plan.md`.
+  7. **`pit_loss = 21.5` s still never derived** from `PitInTime`/`PitOutTime`.
+     Carried forward from Phase 03 and Phase 04.
+
 - **Next 3–5 concrete tasks:**
+  1. Obtain user approval of this diff; commit with message
+     `docs: Silverstone geometry schema and segment consumer inventory`.
+  2. Decide whether the two non-behavioural `track.py` defects (segment-1 `length`,
+     scalar `sector`) warrant a separate approved proposal to regenerate
+     `data/silverstone_2024_track_segments.csv` additively and versioned, or whether
+     documenting them in the Phase 05 artefact is sufficient.
+  3. Correct the two stale statements in the `## Completion record` of
+     `docs/phase-03-plan.md` as a small, separate, approved documentation fix.
+  4. If region-level reporting is wanted, aggregate the existing committed crash
+     columns (`crash_segment_id`, `crash_corner_number`) against
+     `segment_geometry.csv` on `segment_id` — a read-only analysis needing no code
+     change and no new data.
+  5. If a measured pit-lane loss is wanted to corroborate the fixed 21.5 s constant,
+     derive it from `PitInTime`/`PitOutTime` as a new, separately approved analysis.
