@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -120,18 +121,41 @@ def select_action_deterministic(pit_logits, tyre_logits, risk_mean, risk_log_std
 
 def train_reinforce(
     regime: RaceRegime,
-    total_episodes: int,
     seed: int,
     log_dir: Path,
     model_dir: Path,
     learning_rate: float = 3e-4,
     gamma: float = 0.99,
+    total_steps: int | None = None,
+    total_episodes: int | None = None,
 ):
     """Simple REINFORCE training on F1RaceEnv.
 
     Uses an episodic Monte-Carlo policy gradient with a shared policy
-    network over pit, tyre and risk decisions.
+    network over pit, tyre and risk decisions. An episode is always
+    collected to completion (terminated or truncated) before a single
+    policy-gradient update is performed -- this is unchanged regardless
+    of which budget below is active.
+
+    Exactly one of two budgets applies:
+
+    - `total_episodes` (explicit debug/fallback cap): training runs a
+      fixed number of episodes, matching the original behavior. Takes
+      priority over `total_steps` when both are given.
+    - `total_steps` (primary budget, comparable to PPO/A2C/DQN/SARSA's
+      `--steps`): training keeps starting new complete episodes while
+      the cumulative environment-step count is below the target. The
+      budget is only checked between episodes, so the final episode is
+      always allowed to finish -- the actual step count may therefore
+      slightly exceed `total_steps`.
     """
+
+    if total_episodes is None and total_steps is None:
+        raise ValueError(
+            "train_reinforce requires either total_steps or total_episodes"
+        )
+
+    budget_mode = "episodes" if total_episodes is not None else "steps"
 
     device = torch.device("cpu")
 
@@ -150,8 +174,17 @@ def train_reinforce(
 
     rng = np.random.default_rng(seed)
 
-    for episode in range(total_episodes):
-        obs, _ = env.reset(seed=seed + episode)
+    env_steps = 0
+    episodes_completed = 0
+    episode_lengths: list[int] = []
+
+    def _budget_exhausted() -> bool:
+        if budget_mode == "episodes":
+            return episodes_completed >= total_episodes
+        return env_steps >= total_steps
+
+    while not _budget_exhausted():
+        obs, _ = env.reset(seed=seed + episodes_completed)
         done = False
         episode_log_probs = []
         episode_rewards = []
@@ -166,6 +199,7 @@ def train_reinforce(
             # Convert to numpy for env.step: shape (3,)
             action = action_tensor.detach().cpu().numpy()[0]
             next_obs, reward, terminated, truncated, _info = env.step(action)
+            env_steps += 1
 
             done = terminated or truncated
 
@@ -199,8 +233,39 @@ def train_reinforce(
         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
         optimizer.step()
 
-    # Save trained policy
-    model_path = model_dir / f"reinforce_regime={regime.name.lower()}_seed={seed}_episodes={total_episodes}.pt"
+        episodes_completed += 1
+        episode_lengths.append(len(episode_rewards))
+
+    actual_env_steps = env_steps
+    mean_episode_length = (
+        float(np.mean(episode_lengths)) if episode_lengths else 0.0
+    )
+
+    # Save trained policy. The budget tag in the filename disambiguates a
+    # steps-budgeted run from an episodes-budgeted (debug/fallback) run.
+    if budget_mode == "steps":
+        budget_tag = f"steps={total_steps}"
+    else:
+        budget_tag = f"episodes={total_episodes}"
+
+    model_path = model_dir / f"reinforce_regime={regime.name.lower()}_seed={seed}_{budget_tag}.pt"
     torch.save(policy.state_dict(), model_path)
 
+    metadata = {
+        "algo": "reinforce",
+        "regime": regime.name.lower(),
+        "seed": seed,
+        "budget_mode": budget_mode,
+        "target_env_steps": total_steps if budget_mode == "steps" else None,
+        "actual_env_steps": actual_env_steps,
+        "episodes_completed": episodes_completed,
+        "mean_episode_length": mean_episode_length,
+        "gamma": gamma,
+        "learning_rate": learning_rate,
+    }
+    metadata_path = model_path.with_suffix(".json")
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
     env.close()
+
+    return metadata

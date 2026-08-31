@@ -226,13 +226,26 @@ def main():
         dest="steps",
         type=int,
         default=50_000,
-        help="Total environment timesteps (for SB3/SARSA).",
+        help=(
+            "Total environment timesteps. Primary budget for SB3 "
+            "(PPO/A2C/DQN), SARSA and REINFORCE. For REINFORCE this is a "
+            "cumulative environment-step target: complete episodes keep "
+            "running until the target is reached, then training stops "
+            "before the next episode (no mid-episode cutoff). Ignored for "
+            "REINFORCE if --episodes is explicitly set."
+        ),
     )
     parser.add_argument(
         "--episodes",
         type=int,
-        default=200,
-        help="Total episodes for REINFORCE (ignored for SB3/SARSA).",
+        default=None,
+        help=(
+            "Optional episode-count cap for REINFORCE, used only as a "
+            "debug/fallback budget. When explicitly set, it takes priority "
+            "over --steps for REINFORCE (episode-budgeted training, as "
+            "before). Leave unset to budget REINFORCE by --steps instead. "
+            "Ignored for SB3/SARSA."
+        ),
     )
     parser.add_argument(
         "--seed", type=int, default=0, help="Random seed for environment and agent."
@@ -351,7 +364,15 @@ def main():
     elif algo == "sarsa":
         train_sarsa(regime, total_timesteps, seed, log_dir, model_dir, gamma=args.gamma)
     elif algo == "reinforce":
-        train_reinforce(regime, total_episodes, seed, log_dir, model_dir, gamma=args.gamma)
+        train_reinforce(
+            regime,
+            seed,
+            log_dir,
+            model_dir,
+            gamma=args.gamma,
+            total_steps=total_timesteps if total_episodes is None else None,
+            total_episodes=total_episodes,
+        )
     else:
         raise ValueError(f"Unsupported algo: {algo}")
 

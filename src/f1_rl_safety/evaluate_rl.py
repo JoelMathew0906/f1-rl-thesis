@@ -220,8 +220,17 @@ def _load_model(algo: str, regime: RaceRegime, seed: int, steps_or_episodes: int
         return q_net
 
     if algo == "reinforce":
-        path = model_dir / "reinforce" / regime.name.lower() / \
+        base = model_dir / "reinforce" / regime.name.lower()
+        # New convention (steps-budgeted, the default since the REINFORCE
+        # --steps support was added) takes priority; fall back to the
+        # legacy episodes-budgeted filename for older checkpoints.
+        steps_path = base / (
+            f"reinforce_regime={regime.name.lower()}_seed={seed}_steps={steps_or_episodes}.pt"
+        )
+        episodes_path = base / (
             f"reinforce_regime={regime.name.lower()}_seed={seed}_episodes={steps_or_episodes}.pt"
+        )
+        path = steps_path if steps_path.exists() else episodes_path
         env = F1RaceEnv(regime=regime, seed=seed)
         obs_dim = env.observation_space.shape[0]
         policy = PolicyNetwork(obs_dim)
