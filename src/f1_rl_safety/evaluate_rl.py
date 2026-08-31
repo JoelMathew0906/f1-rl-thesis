@@ -247,11 +247,11 @@ def _select_action(algo: str, model, obs, env):
         return action
 
     if algo == "reinforce":
-        from .reinforce_agent import sample_action
+        from .reinforce_agent import select_action_deterministic
 
         obs_tensor = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
         pit_logits, tyre_logits, risk_mean, risk_log_std = model(obs_tensor)
-        action_tensor, _log_prob = sample_action(
+        action_tensor = select_action_deterministic(
             pit_logits, tyre_logits, risk_mean, risk_log_std
         )
         return action_tensor.detach().cpu().numpy()[0]

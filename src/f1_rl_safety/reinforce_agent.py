@@ -84,6 +84,40 @@ def sample_action(pit_logits, tyre_logits, risk_mean, risk_log_std):
     return action, log_prob.squeeze(-1)               # action (1, 3), log_prob (1,)
 
 
+def select_action_deterministic(pit_logits, tyre_logits, risk_mean, risk_log_std=None):
+    """Deterministic REINFORCE action selection, for evaluation only.
+
+    Mirrors sample_action's action container (dtype, shape, ordering and
+    tanh scaling) but replaces sampling with:
+      - the highest-logit (argmax-equivalent) pit decision, i.e. the
+        Bernoulli logit thresholded at 0 (equivalent to P(pit=1) >= 0.5);
+      - the highest-logit tyre choice;
+      - the policy's predicted risk mean, not a sampled risk value.
+
+    `risk_log_std` is accepted (and unused) only so this function is a
+    drop-in replacement for sample_action's call signature at call sites.
+    Training must continue to use sample_action, not this function.
+    """
+    # Defensive: replace any NaNs in logits with zeros (matches sample_action)
+    pit_logits = torch.nan_to_num(pit_logits, nan=0.0)
+    tyre_logits = torch.nan_to_num(tyre_logits, nan=0.0)
+    risk_mean = torch.nan_to_num(risk_mean, nan=0.0)
+
+    # Deterministic pit decision: single-logit Bernoulli argmax is
+    # equivalent to thresholding the logit at 0 (prob >= 0.5).
+    pit_action = (pit_logits > 0).float()             # (1, 1)
+
+    # Deterministic tyre choice: highest-logit compound.
+    tyre_action = torch.argmax(tyre_logits, dim=-1)   # (1,)
+
+    pit = pit_action.squeeze(-1)                      # (1,)
+    tyre = tyre_action.float()                         # (1,)
+    risk = torch.tanh(risk_mean.squeeze(-1))           # (1,)
+
+    action = torch.stack([pit, tyre, risk], dim=-1)   # (1, 3)
+    return action
+
+
 def train_reinforce(
     regime: RaceRegime,
     total_episodes: int,
