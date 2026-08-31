@@ -72,6 +72,8 @@ def _episode_rows(
     ep_risk: list[float],
     crash_log: list[dict[str, Any]],
     pitstop_distribution: Dict[int, int],
+    evaluation_episode: int,
+    evaluation_env_seed: int,
 ) -> list[Dict[str, Any]]:
     """Build CSV rows for a single evaluation episode.
 
@@ -117,6 +119,8 @@ def _episode_rows(
         "regime": regime.name.lower(),
         "seed": seed,
         "steps_or_episodes": steps_or_episodes,
+        "evaluation_episode": evaluation_episode,
+        "evaluation_env_seed": evaluation_env_seed,
         "finish_position": int(getattr(base_env, "position", 0)),
         "race_time": float(getattr(base_env, "race_time", 0.0)),
         "crashes": int(crashed),
@@ -190,16 +194,17 @@ def _episode_rows(
 
 
 def _load_model(algo: str, regime: RaceRegime, seed: int, steps_or_episodes: int,
-                model_dir: Path):
+                model_dir: Path, run_name: str | None = None):
     if algo in {"ppo", "a2c", "dqn"}:
-        path = model_dir / algo / regime.name.lower() / \
+        sb3_base = (model_dir / run_name) if run_name else model_dir
+        path = sb3_base / algo / regime.name.lower() / \
             f"{algo}_regime={regime.name.lower()}_seed={seed}_steps={steps_or_episodes}.zip"
         cls = {"ppo": PPO, "a2c": A2C, "dqn": DQN}[algo]
 
         # For PPO, fall back to top-level smoke-test models if detailed path
         # does not exist, without changing filenames.
         if not path.exists() and algo == "ppo":
-            fallback_path = model_dir / f"ppo_{regime.name.lower()}.zip"
+            fallback_path = sb3_base / f"ppo_{regime.name.lower()}.zip"
             return cls.load(str(fallback_path))
 
         return cls.load(str(path))
@@ -275,16 +280,23 @@ def evaluate_model(
     steps_or_episodes: int,
     n_episodes: int,
     model_dir: Path,
+    run_name: str | None = None,
+    eval_seed_base: int = 10000,
 ) -> list[Dict[str, Any]]:
     """Evaluate a trained model/agent over n_episodes.
 
     Returns a list of per-episode / per-crash rows combining
     aggregate summary fields with crash-level and episode-level
     information, including reward component totals when available.
+
+    Evaluation-episode environment reset seeds are drawn from
+    `eval_seed_base + ep` (ep = 0..n_episodes-1), independent of the
+    training/checkpoint `seed`, so every evaluated model can share an
+    identical evaluation-seed schedule.
     """
 
     env = _make_env(regime, algo, seed)
-    model = _load_model(algo, regime, seed, steps_or_episodes, model_dir)
+    model = _load_model(algo, regime, seed, steps_or_episodes, model_dir, run_name=run_name)
 
     stats = {
         "finish_position": [],
@@ -298,7 +310,8 @@ def evaluate_model(
     all_rows: list[Dict[str, Any]] = []
 
     for ep in range(n_episodes):
-        obs, _ = env.reset(seed=seed + ep)
+        evaluation_env_seed = eval_seed_base + ep
+        obs, _ = env.reset(seed=evaluation_env_seed)
         done = False
         ep_risk: list[float] = []
 
@@ -334,6 +347,8 @@ def evaluate_model(
             ep_risk=ep_risk,
             crash_log=crash_log,
             pitstop_distribution={},  # placeholder; overwritten below
+            evaluation_episode=ep,
+            evaluation_env_seed=evaluation_env_seed,
         )
         all_rows.extend(episode_rows)
 
@@ -354,6 +369,8 @@ def evaluate_grid(
     n_episodes: int,
     model_dir: Path,
     output_csv: Path,
+    run_name: str | None = None,
+    eval_seed_base: int = 10000,
 ):
     """Evaluate multiple seeds for a given algo/regime and export CSV.
 
@@ -371,6 +388,8 @@ def evaluate_grid(
             steps_or_episodes=steps_or_episodes,
             n_episodes=n_episodes,
             model_dir=model_dir,
+            run_name=run_name,
+            eval_seed_base=eval_seed_base,
         )
         rows.extend(seed_rows)
 
