@@ -1,6 +1,0 @@
-regime,check,lhs,rhs,passed
-rulebook,compliant_one_stop > aggressive_zero_stop,-7.352829051033305,-22.716960958213328,True
-rulebook,compliant_one_stop > fast_zero_stop,-7.352829051033305,-20.728937791408434,True
-safe,conservative_one_stop > aggressive_zero_stop,-35.822654517977234,-48.233204726609706,True
-unconstrained,fast_zero_stop > conservative_one_stop,-14.038519478521087,-12.139315059924119,False
-unconstrained,aggressive_zero_stop is not top-ranked,,,True

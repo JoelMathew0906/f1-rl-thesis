@@ -1,6 +1,0 @@
-session_code,load_success,load_seconds,cache_growth_bytes,session_name,session_date,laps_rows,laps_cols,laps_is_accurate_true,laps_compounds_observed,laps_distinct_drivers,weather_rows,weather_cols,track_status_rows,track_status_codes_observed,circuit_info_available,circuit_corners_rows,telemetry_rows_fastest_lap,telemetry_cols,telemetry_median_sample_interval_s,position_data_available,position_data_n_drivers,position_data_sample_driver,position_data_sample_rows
-FP1,True,0.511,0,Practice 1,2024-07-05 11:30:00,459,31,294,"HARD,MEDIUM,SOFT",20,81,8,8,"1,2,5",True,18,647,18,0.13,True,20,1,18522
-FP2,True,4.656,67437244,Practice 2,2024-07-05 15:00:00,477,31,299,"HARD,INTERMEDIATE,MEDIUM,SOFT",20,81,8,1,1,True,18,648,18,0.131,True,20,1,18500
-FP3,True,4.591,50429785,Practice 3,2024-07-06 10:30:00,438,31,287,"INTERMEDIATE,None",20,82,8,6,"1,2,5",True,18,731,18,0.138,True,20,1,18202
-Q,True,5.022,53714008,Qualifying,2024-07-06 14:00:00,368,31,177,"INTERMEDIATE,SOFT",20,85,8,4,"1,2,5",True,18,647,18,0.133,True,20,63,19665
-R,True,0.781,0,Race,2024-07-07 14:00:00,960,31,850,"HARD,INTERMEDIATE,MEDIUM,SOFT",19,147,8,1,1,True,18,675,18,0.125,True,20,44,33899

@@ -1,4 +1,0 @@
-regime,gamma,mean_return_mean,mean_return_std,mean_laps_mean,mean_laps_std,finish_rate_mean,finish_rate_std,mean_finish_time_mean,mean_finish_time_std,crash_rate_mean,crash_rate_std,cat_rate_mean,cat_rate_std,mean_pits_mean,mean_pits_std,compliance_rate_mean,compliance_rate_std,mean_risk_mean,mean_risk_std,n_episodes_total
-rulebook,0.999,2.54,32.292,26.213,2.11,0.08,0.02,5058.73,333.911,0.92,0.02,0.12,0.069,0.58,0.502,0.567,0.491,0.197,0.186,150
-safe,0.999,-25.662,27.6,28.433,1.013,0.167,0.083,5124.671,58.813,0.833,0.083,0.14,0.12,0.24,0.416,0.0,0.0,-0.411,0.049,150
-unconstrained,0.999,-33.587,15.39,20.98,2.412,0.033,0.031,5130.599,8.327,0.967,0.031,0.2,0.08,0.0,0.0,0.0,0.0,0.68,0.197,150

@@ -1,6 +1,0 @@
-compound,idx,n_laps,raw_slope,clipped_slope,clip_active,clip_direction,offset_vs_base,raw_median_stint,typical_stint,stint_clip_active,source
-SOFT,0,158,0.04410517831956795,0.04410517831956795,False,not active,-1.2704999999999984,13.0,13,False,data-derived
-MEDIUM,1,465,0.20183922020374745,0.20183922020374745,False,not active,0.2635000000000076,24.0,24,False,data-derived
-HARD,2,39,0.16839862778730627,0.16839862778730627,False,not active,-2.5614999999999952,13.0,13,False,data-derived
-INTERMEDIATE,3,188,-0.07188102149858736,0.01,True,FLOOR active (raw -0.071881 < 0.01),10.713499999999996,9.0,9,False,data-derived
-WET,4,0,,0.25,,n/a — fallback used,11.0,,10,,fallback (no laps)

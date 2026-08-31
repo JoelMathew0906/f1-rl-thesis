@@ -1,8 +1,0 @@
-regime,check,lhs,rhs,passed
-rulebook,compliant_one_stop > aggressive_zero_stop,23.511486252770467,-22.57206003551714,True
-rulebook,compliant_one_stop > fast_zero_stop,23.511486252770467,-33.41355195724057,True
-safe,conservative_one_stop > aggressive_zero_stop,4.2595710930226645,-51.67164204502375,True
-unconstrained,compliant_one_stop > conservative_one_stop,9.536595631926028,-9.387036356591222,True
-unconstrained,compliant_one_stop > aggressive_zero_stop,9.536595631926028,-19.899189672690554,True
-unconstrained,compliant_one_stop > over_pitting,9.536595631926028,-722.1078735207094,True
-unconstrained,aggressive_zero_stop is not top-ranked,,,True

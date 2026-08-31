@@ -1,4 +1,0 @@
-regime,mean_return_mean,mean_return_std,mean_laps_mean,mean_laps_std,finish_rate_mean,finish_rate_std,mean_finish_time_mean,mean_finish_time_std,crash_rate_mean,crash_rate_std,cat_rate_mean,cat_rate_std,mean_pits_mean,mean_pits_std,compliance_rate_mean,compliance_rate_std,mean_risk_mean,mean_risk_std,crash_tyre_age_mean_mean,crash_tyre_age_mean_std,crash_tyre_wear_mean_mean,crash_tyre_wear_mean_std,n_episodes_total
-rulebook,-34.266,7.039,25.307,2.926,0.1,0.035,5449.627,27.971,0.9,0.035,0.147,0.031,0.013,0.023,0.013,0.023,0.091,0.576,22.112,2.446,0.829,0.071,150
-safe,-42.154,5.687,27.007,2.17,0.107,0.061,5155.44,38.257,0.893,0.061,0.173,0.042,0.0,0.0,0.0,0.0,-0.225,0.438,24.044,0.596,0.853,0.021,150
-unconstrained,-27.788,30.995,20.047,6.438,0.027,0.046,5119.57,,0.973,0.046,0.22,0.0,0.0,0.0,0.0,0.0,0.763,0.36,19.336,5.207,0.829,0.135,150
