@@ -14,38 +14,75 @@ environment:
   enable_track_segments: true
   enable_crash_logging: true
 
+# Single source of truth for reward coefficients. Loaded and validated by
+# src/f1_rl_safety/f1_env.py (load_reward_weights) at environment
+# construction; term semantics (when each coefficient fires) are documented
+# in F1RaceEnv._compute_reward. All regimes share one term schema; a
+# coefficient of 0.0 disables a term. Every key below is required for every
+# regime — the loader fails fast on missing, unknown, or non-numeric keys.
 reward_regimes:
   unconstrained:
-    reward_time_weight: -0.01
-    reward_lap_completion: 0.1
-    reward_risk_weight: 0.02
-    reward_crash_penalty: -8.0
-    reward_pit_weight: 0.0
-    reward_compound_bonus: 0.0
-    reward_compliance_bonus: 0.0
-    reward_stale_tyre_penalty: 0.0
+    w_pace: 1.0                      # per step: w_pace * (base_seg_time - seg_time); rewards speed, never risk itself
+    w_alive: 0.02                    # per surviving step
+    w_lap: 0.5                       # per completed lap
+    w_finish: 20.0                   # completing all laps without crash
+    w_position_delta: 0.5            # per position gained (negative if lost)
+    crash_penalty: 10.0
+    catastrophic_penalty: 10.0       # extra, on top of crash_penalty
+    w_risk_step: 0.0                 # per step: -w * max(0, risk - risk_free_threshold)
+    risk_free_threshold: 0.0
+    w_wear_step: 0.0                 # per step: -w * max(0, tyre_wear - wear_threshold)
+    wear_threshold: 0.6
+    pit_milestone_bonus: 0.0         # once, on first effective pit stop
+    compound_milestone_bonus: 0.0    # once, when >=2 dry compounds used (dry race)
+    finish_compliant_bonus: 0.0      # settled at race finish only; crashed episodes settle no compliance
+    finish_noncompliant_penalty: 0.0
+    over_pit_cap: 3
+    over_pit_penalty: 0.0            # per pit beyond over_pit_cap, charged at that pit
+    no_pit_step_penalty: 0.0         # per step while pit_count == 0 after no_pit_grace_laps
+    no_pit_grace_laps: 2
 
   rulebook:
-    reward_time_weight: -0.01
-    reward_lap_completion: 0.1
-    reward_risk_weight: -0.01
-    reward_crash_penalty: -20.0
-    reward_pit_weight: 2.0
-    reward_compound_bonus: 3.0
-    reward_compliance_bonus: 8.0
-    reward_stale_tyre_penalty: -0.05
-    non_compliance_penalty: -10.0
+    w_pace: 0.4
+    w_alive: 0.02
+    w_lap: 0.5
+    w_finish: 20.0
+    w_position_delta: 0.3
+    crash_penalty: 20.0
+    catastrophic_penalty: 20.0
+    w_risk_step: 0.02
+    risk_free_threshold: 0.4
+    w_wear_step: 0.0
+    wear_threshold: 0.6
+    pit_milestone_bonus: 8.0
+    compound_milestone_bonus: 6.0
+    finish_compliant_bonus: 10.0
+    finish_noncompliant_penalty: 30.0
+    over_pit_cap: 3
+    over_pit_penalty: 2.0
+    no_pit_step_penalty: 0.005
+    no_pit_grace_laps: 2
 
   safe:
-    reward_time_weight: -0.01
-    reward_lap_completion: 0.5
-    reward_risk_weight: -0.05
-    reward_crash_penalty: -300.0
-    reward_pit_weight: 1.0
-    reward_compound_bonus: 1.0
-    reward_compliance_bonus: 2.0
-    reward_stale_tyre_penalty: -0.1
-    clean_segment_bonus: 0.02
+    w_pace: 0.3
+    w_alive: 0.03
+    w_lap: 1.0
+    w_finish: 30.0
+    w_position_delta: 0.1
+    crash_penalty: 40.0
+    catastrophic_penalty: 60.0
+    w_risk_step: 0.03
+    risk_free_threshold: 0.0
+    w_wear_step: 0.1
+    wear_threshold: 0.6
+    pit_milestone_bonus: 2.0
+    compound_milestone_bonus: 0.0
+    finish_compliant_bonus: 0.0
+    finish_noncompliant_penalty: 0.0
+    over_pit_cap: 3
+    over_pit_penalty: 2.0
+    no_pit_step_penalty: 0.0
+    no_pit_grace_laps: 2
 
 training_defaults:
   algorithm: PPO

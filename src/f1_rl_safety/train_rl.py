@@ -55,6 +55,7 @@ def train_sb3_algo(
     model_dir: Path,
     run_name: str,
     resume: bool = False,
+    gamma: float = 0.999,
 ) -> Path:
     """Train a PPO/A2C/DQN agent on the F1RaceEnv.
 
@@ -83,14 +84,15 @@ def train_sb3_algo(
 
     if algo == "ppo":
         if resume and model_path.exists():
-            # Explicit resume: load existing checkpoint and continue training
+            # Explicit resume: load existing checkpoint and continue training,
+            # retaining the checkpoint's own gamma rather than the CLI value.
             model = PPO.load(str(model_path), env=env)
         else:
-            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed)
+            model = PPO("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed, gamma=gamma)
     elif algo == "a2c":
-        model = A2C("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed)
+        model = A2C("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed, gamma=gamma)
     elif algo == "dqn":
-        model = DQN("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed)
+        model = DQN("MlpPolicy", env, verbose=1, tensorboard_log=str(tb_log_base), seed=seed, gamma=gamma)
     else:
         raise ValueError(f"Unsupported SB3 algo for this helper: {algo}")
 
@@ -264,6 +266,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.999,
+        help=(
+            "Discount factor shared by PPO, DQN, A2C, SARSA and REINFORCE. "
+            "Must satisfy 0 < gamma <= 1. For --resume loads, the checkpoint's "
+            "own gamma is kept instead of this value."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -282,6 +294,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if not (0.0 < args.gamma <= 1.0):
+        parser.error(f"--gamma must be in (0, 1], got {args.gamma}")
 
     algo = args.algo.lower()
     regime = REGIMES[args.regime]
@@ -318,6 +333,7 @@ def main():
             model_dir,
             run_name,
             resume=args.resume,
+            gamma=args.gamma,
         )
 
         # Optional PPO-only smoke-test evaluation into outputs/.../eval
@@ -333,9 +349,9 @@ def main():
             )
 
     elif algo == "sarsa":
-        train_sarsa(regime, total_timesteps, seed, log_dir, model_dir)
+        train_sarsa(regime, total_timesteps, seed, log_dir, model_dir, gamma=args.gamma)
     elif algo == "reinforce":
-        train_reinforce(regime, total_episodes, seed, log_dir, model_dir)
+        train_reinforce(regime, total_episodes, seed, log_dir, model_dir, gamma=args.gamma)
     else:
         raise ValueError(f"Unsupported algo: {algo}")
 

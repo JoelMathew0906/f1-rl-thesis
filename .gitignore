@@ -26,3 +26,17 @@ requirements_old.txt
 
 # Debug experiment artifacts
 outputs/debug/
+
+# Bulky generated study artefacts under outputs/ (curated manifests,
+# summaries, STUDY_README files and reproducibility scripts stay tracked)
+outputs/**/models/
+outputs/**/logs/
+outputs/**/trainlogs/
+outputs/**/eval/
+outputs/**/diagnostics/
+outputs/**/DONE
+
+# Record-level pace-profile CSVs (one row per lap). Curated README.md,
+# manifest.csv and matched_window_summary.csv in the same directory
+# remain tracked, as does scripts/analyse_pace_profiles.py.
+outputs/**/*_pace_profiles.csv
