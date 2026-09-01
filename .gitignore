@@ -40,3 +40,9 @@ outputs/**/DONE
 # manifest.csv and matched_window_summary.csv in the same directory
 # remain tracked, as does scripts/analyse_pace_profiles.py.
 outputs/**/*_pace_profiles.csv
+# SHAP pipeline: keep the aggregated CSVs and chart HTML (cited thesis
+# artefacts); ignore per-model intermediate PNGs and chart metadata
+# (regenerable via scripts/generate_shap_csvs.py + analyse_shap.py /
+# analyse_global_importance.py).
+data/shap/*.png
+output/*.meta.json
